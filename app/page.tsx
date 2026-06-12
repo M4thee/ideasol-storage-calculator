@@ -78,6 +78,7 @@ function getStorageFromConsumption(yearlyConsumptionKwh: number) {
   return 30;
 }
 
+
 function getSuggestedPvKw(yearlyConsumptionKwh: number) {
   if (yearlyConsumptionKwh <= 3500) return 4;
   if (yearlyConsumptionKwh <= 5000) return 5;
@@ -85,6 +86,40 @@ function getSuggestedPvKw(yearlyConsumptionKwh: number) {
   if (yearlyConsumptionKwh <= 8500) return 8;
   if (yearlyConsumptionKwh <= 11000) return 10;
   return 12;
+}
+
+function roundUpToHalfKw(value: number) {
+  return Math.ceil(value * 2) / 2;
+}
+
+function getSuggestedPvStorageSystem(yearlyConsumptionKwh: number) {
+  const fallbackPvKw = getSuggestedPvKw(yearlyConsumptionKwh);
+
+  if (yearlyConsumptionKwh <= 0) {
+    const fallbackStorageKwh = pickStorageVariant(fallbackPvKw * 2);
+
+    return {
+      pvKw: fallbackPvKw,
+      storageKwh: fallbackStorageKwh,
+      autoconsumptionRate: getAutoconsumptionRateWithStorageAndHems(fallbackStorageKwh),
+    };
+  }
+
+  let pvKw = fallbackPvKw;
+  let storageKwh = pickStorageVariant(pvKw * 2);
+
+  for (let index = 0; index < 4; index += 1) {
+    const autoconsumptionRate = getAutoconsumptionRateWithStorageAndHems(storageKwh);
+    const requiredPvKw = yearlyConsumptionKwh / (PV_PRODUCTION_PER_KWP * autoconsumptionRate);
+    pvKw = Math.max(fallbackPvKw, roundUpToHalfKw(requiredPvKw));
+    storageKwh = pickStorageVariant(pvKw * 2);
+  }
+
+  return {
+    pvKw,
+    storageKwh,
+    autoconsumptionRate: getAutoconsumptionRateWithStorageAndHems(storageKwh),
+  };
 }
 
 function calculatePaybackYears(investmentAfterSubsidy: number, yearlySavings: number) {
@@ -770,6 +805,7 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       if (!hasPv || yearlyBill <= 0) return null;
 
       const storageFromConsumption = getStorageFromConsumption(yearlyConsumptionKwh);
+      const suggestedPvStorageSystem = getSuggestedPvStorageSystem(yearlyConsumptionKwh);
       const storageFromPv =
         hasPv === "yes" && currentPvPowerKw > 0
           ? pickStorageVariant(currentPvPowerKw * 2)
@@ -777,8 +813,8 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const recommendedStorageKwh =
         hasPv === "yes"
           ? Math.max(storageFromConsumption, storageFromPv)
-          : pickStorageVariant(getSuggestedPvKw(yearlyConsumptionKwh) * 2);
-      let suggestedPvKw = getSuggestedPvKw(yearlyConsumptionKwh);
+          : suggestedPvStorageSystem.storageKwh;
+      let suggestedPvKw = hasPv === "yes" ? getSuggestedPvKw(yearlyConsumptionKwh) : suggestedPvStorageSystem.pvKw;
 
       if (
         hasPv === "yes" &&
@@ -839,16 +875,37 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
             })
           : null;
 
-      const yearlySavingsLow = netBillingSavingsDetails
-        ? netBillingSavingsDetails.low
-        : netMeteringSavingsDetails
-          ? netMeteringSavingsDetails.low
-          : yearlyBill * savingsRate.low;
-      const yearlySavingsHigh = netBillingSavingsDetails
-        ? netBillingSavingsDetails.high
-        : netMeteringSavingsDetails
-          ? netMeteringSavingsDetails.high
-          : yearlyBill * savingsRate.high;
+      const pvStorageProductionKwh = suggestedPvKw * PV_PRODUCTION_PER_KWP;
+      const pvStorageAutoconsumptionRate = getAutoconsumptionRateWithStorageAndHems(recommendedStorageKwh);
+      const pvStorageSelfConsumedKwh = Math.min(
+        yearlyConsumptionKwh,
+        pvStorageProductionKwh * pvStorageAutoconsumptionRate
+      );
+      const pvStorageExportedKwh = Math.max(0, pvStorageProductionKwh - pvStorageSelfConsumedKwh);
+      const pvStorageGridPurchaseKwh = Math.max(0, yearlyConsumptionKwh - pvStorageSelfConsumedKwh);
+      const pvStorageGridPurchaseCost = pvStorageGridPurchaseKwh * ENERGY_PRICE_PER_KWH;
+      const pvStorageExportValue = pvStorageExportedKwh * NET_BILLING_EXPORT_PRICE_PER_KWH;
+      const pvStorageEstimatedBillAfterSystem = Math.max(0, pvStorageGridPurchaseCost - pvStorageExportValue);
+      const pvStorageExpectedSavings = clamp(
+        yearlyBill - pvStorageEstimatedBillAfterSystem,
+        0,
+        yearlyBill * 0.98
+      );
+
+      const yearlySavingsLow = hasPv === "no"
+        ? clamp(pvStorageExpectedSavings * 0.9, 0, yearlyBill * 0.95)
+        : netBillingSavingsDetails
+          ? netBillingSavingsDetails.low
+          : netMeteringSavingsDetails
+            ? netMeteringSavingsDetails.low
+            : yearlyBill * savingsRate.low;
+      const yearlySavingsHigh = hasPv === "no"
+        ? clamp(pvStorageExpectedSavings * 1.1, 0, yearlyBill * 0.98)
+        : netBillingSavingsDetails
+          ? netBillingSavingsDetails.high
+          : netMeteringSavingsDetails
+            ? netMeteringSavingsDetails.high
+            : yearlyBill * savingsRate.high;
 
       const baseCalculatorPriceWithoutSellerMarkup =
         hasPv === "yes"
@@ -870,11 +927,29 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const paybackYearsLow = calculatePaybackYears(investmentLowAfterSubsidy, yearlySavingsHigh);
       const paybackYearsHigh = calculatePaybackYears(investmentHighAfterSubsidy, yearlySavingsLow);
 
-      const recommendation = getRecommendation({
+      const baseRecommendation = getRecommendation({
         paybackYearsLow,
         paybackYearsHigh,
         priorities,
       });
+
+      const recommendation = hasPv === "no"
+        ? {
+            ...baseRecommendation,
+            title:
+              baseRecommendation.type === "recommended"
+                ? "Fotowoltaika z magazynem energii wygląda na dobrą inwestycję"
+                : baseRecommendation.type === "not_recommended"
+                  ? "Fotowoltaika z magazynem energii ma ograniczoną opłacalność"
+                  : "Fotowoltaikę z magazynem energii warto rozważyć",
+            description:
+              baseRecommendation.type === "recommended"
+                ? "Szacowany okres zwrotu jest korzystny, a połączenie fotowoltaiki z magazynem energii może znacząco ograniczyć zakup energii z sieci."
+                : baseRecommendation.type === "not_recommended"
+                  ? "Przy obecnych założeniach taki zestaw może zwracać się stosunkowo długo. Warto porozmawiać z doradcą o doborze mocy PV, taryfie i możliwych dotacjach."
+                  : "Opłacalność zależy m.in. od profilu zużycia energii, dobranej mocy PV, pojemności magazynu, przyszłych cen prądu oraz możliwości uzyskania dotacji.",
+          }
+        : baseRecommendation;
 
       return {
         recommendedStorageKwh,
@@ -887,6 +962,12 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         shouldRecommendPvExpansion,
         pvExpansionStorageKwh,
         pvExpansionPriceRange,
+        pvStorageProductionKwh,
+        pvStorageAutoconsumptionRate,
+        pvStorageSelfConsumedKwh,
+        pvStorageExportedKwh,
+        pvStorageGridPurchaseKwh,
+        pvStorageEstimatedBillAfterSystem,
         netBillingSavingsDetails,
         netMeteringSavingsDetails,
         yearlySavingsLow,
@@ -1288,8 +1369,45 @@ const canSubmitLead = Boolean(
                   )}
                   {hasPv === "no" && (
                     <div className={resultCardClass}>
-                      <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Sugerowana moc instalacji fotowoltaicznej</p>
-                      <p className={isDarkMode ? "mt-1 text-2xl font-bold text-white" : "mt-1 text-2xl font-bold text-slate-950"}>około {result.suggestedPvKw} kWp</p>
+                      <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>
+                        Sugerowana instalacja fotowoltaiczna
+                      </p>
+
+                      <p className={isDarkMode ? "mt-1 text-2xl font-bold text-white" : "mt-1 text-2xl font-bold text-slate-950"}>
+                        około {result.suggestedPvKw} kWp
+                      </p>
+
+                      <button
+                        type="button"
+                        onClick={() => toggleResultDetail("newPv")}
+                        className={`mt-2 text-xs font-bold underline-offset-4 hover:underline ${isDarkMode ? "text-cyan-200" : "text-cyan-800"}`}
+                      >
+                        {expandedResultDetails.newPv ? "Ukryj szczegóły" : "Rozwiń szczegóły"}
+                      </button>
+
+                      {expandedResultDetails.newPv && (
+                        <div className={`mt-3 px-4 py-3 ${isDarkMode ? "bg-white/5" : "bg-slate-100/80"}`}>
+                          <p className={`text-xs leading-5 ${mutedTextClass}`}>
+                            Zgodnie z kalkulacją obecnie zużywasz około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(yearlyConsumptionKwh).toLocaleString("pl-PL")} kWh</strong> energii rocznie.
+                          </p>
+
+                      <p className={`mt-2 text-xs leading-5 ${mutedTextClass}`}>
+                        Proponowana instalacja fotowoltaiczna o mocy <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{result.suggestedPvKw} kWp</strong> może wyprodukować około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.pvStorageProductionKwh).toLocaleString("pl-PL")} kWh</strong> energii rocznie.
+                      </p>
+
+                      <p className={`mt-2 text-xs leading-5 ${mutedTextClass}`}>
+                        W połączeniu z magazynem energii o pojemności <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{result.recommendedStorageKwh} kWh</strong> oraz systemem inteligentnego zarządzania energią (HEMS/EMS), możliwe jest wykorzystanie nawet około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.pvStorageAutoconsumptionRate * 100)}%</strong> wyprodukowanej energii bezpośrednio na potrzeby własnego domu.
+                      </p>
+
+                          <p className={`mt-2 text-xs leading-5 ${mutedTextClass}`}>
+                            W takim wariancie szacunkowo około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.pvStorageSelfConsumedKwh).toLocaleString("pl-PL")} kWh</strong> energii rocznie zostanie wykorzystane w domu, a około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.pvStorageExportedKwh).toLocaleString("pl-PL")} kWh</strong> może stanowić nadwyżkę oddawaną do sieci.
+                          </p>
+
+                          <p className={`mt-2 text-xs leading-5 ${mutedTextClass}`}>
+                            Nadwyżki energii mogą być sprzedawane do sieci energetycznej, a ich wartość zależy między innymi od wybranego sposobu rozliczeń oraz taryfy. Doradca IdeaSol pomoże dobrać najlepsze rozwiązanie i wyjaśni różnice pomiędzy dostępnymi wariantami.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className={resultCardClass}>
@@ -1327,7 +1445,9 @@ const canSubmitLead = Boolean(
                           <p className={`text-xs leading-5 ${mutedTextClass}`}>
                             {result.netMeteringSavingsDetails
       ? `Dla net-meteringu przyjęliśmy około ${Math.round(result.netMeteringSavingsDetails.baseAutoconsumptionRate * 100)}% autokonsumpcji bez magazynu energii oraz około ${Math.round(result.netMeteringSavingsDetails.autoconsumptionRateWithStorage * 100)}% autokonsumpcji z zastosowaniem magazynu energii i HEMS. W systemie opustów za każdą 1 kWh oddaną do sieci możesz odebrać około ${Math.round(result.netMeteringSavingsDetails.returnRate * 100)}% energii, dlatego magazyn poprawia wynik głównie przez ograniczenie tej straty i zwiększenie zużycia energii na miejscu.`
-      : `To nawet około ${Math.round(result.savingsRateLow * 100)}–${Math.round(result.savingsRateHigh * 100)}% obecnych kosztów energii, w zależności od profilu zużycia i sposobu pracy instalacji.`}
+      : hasPv === "no"
+        ? `To około ${Math.round((result.yearlySavingsLow / yearlyBill) * 100)}–${Math.round((result.yearlySavingsHigh / yearlyBill) * 100)}% obecnych kosztów energii. Szacunek wynika z porównania obecnego rachunku z przewidywanym kosztem energii po montażu fotowoltaiki, magazynu energii i systemu HEMS/EMS.`
+        : `To około ${Math.round((result.yearlySavingsLow / yearlyBill) * 100)}–${Math.round((result.yearlySavingsHigh / yearlyBill) * 100)}% obecnych kosztów energii, w zależności od profilu zużycia i sposobu pracy instalacji.`}
                           </p>
                         </div>
                       )
