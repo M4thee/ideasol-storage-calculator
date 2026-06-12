@@ -38,6 +38,10 @@ type LeadPayload = {
   };
 };
 
+type CrmClientInsertResult = {
+  id: string;
+};
+
 const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
@@ -113,6 +117,96 @@ function formatSettlementSystem(value: "net_billing" | "net_metering" | "unknown
   if (value === "net_billing") return "Net-billing";
   if (value === "net_metering") return "Net-metering";
   return "Nie wiem / brak danych";
+}
+
+function getSupabaseConfig() {
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error("Missing Supabase configuration for CRM lead insert.");
+  }
+
+  return {
+    supabaseUrl: supabaseUrl.replace(/\/$/, ""),
+    serviceRoleKey,
+  };
+}
+
+function buildCrmClientUrl(clientId: string) {
+  const crmBaseUrl =
+    process.env.NEXT_PUBLIC_CRM_URL ||
+    process.env.CRM_APP_URL ||
+    process.env.APP_URL ||
+    "https://crm.ideasol.pl";
+
+  return `${crmBaseUrl.replace(/\/$/, "")}/clients/${clientId}`;
+}
+
+async function insertLeadIntoCrm(payload: LeadPayload) {
+  const { supabaseUrl, serviceRoleKey } = getSupabaseConfig();
+  const contact = payload.contact ?? {};
+  const firstName = cleanText(contact.firstName);
+  const lastName = cleanText(contact.lastName);
+  const fullName = [firstName, lastName].filter(Boolean).join(" ") || firstName;
+  const phone = cleanText(contact.phone);
+  const email = cleanText(contact.email).toLowerCase() || null;
+  const postalCode = cleanText(contact.postalCode);
+
+  const insertResponse = await fetch(`${supabaseUrl}/rest/v1/clients?select=id`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({
+      client_type: "B2C",
+      full_name: fullName,
+      contact_person: fullName,
+      phone,
+      contact_phone: phone,
+      email,
+      postal_code: postalCode,
+      status: "Nowy lead",
+      is_lead: true,
+      lead_source: "kalkulatorME",
+    }),
+  });
+
+  if (!insertResponse.ok) {
+    const text = await insertResponse.text().catch(() => "");
+    throw new Error(`CRM client insert failed: ${insertResponse.status} ${text}`);
+  }
+
+  const insertedClients = (await insertResponse.json()) as CrmClientInsertResult[];
+  const clientId = insertedClients[0]?.id;
+
+  if (!clientId) {
+    throw new Error("CRM client insert did not return client id.");
+  }
+
+  const noteResponse = await fetch(`${supabaseUrl}/rest/v1/client_notes`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({
+      client_id: clientId,
+      content: buildAnalysisNote(payload),
+    }),
+  });
+
+  if (!noteResponse.ok) {
+    const text = await noteResponse.text().catch(() => "");
+    console.error(`CRM note insert failed: ${noteResponse.status} ${text}`);
+  }
+
+  return clientId;
 }
 
 async function verifyTurnstileToken(token: string, request: Request) {
@@ -279,7 +373,7 @@ async function sendInternalLeadEmail(payload: LeadPayload) {
   });
 }
 
-async function sendTeamsNotification(payload: LeadPayload) {
+async function sendTeamsNotification(payload: LeadPayload, clientId?: string | null) {
   const webhookUrl = process.env.TEAMS_WEBHOOK_URL?.trim();
 
   if (!webhookUrl) {
@@ -304,7 +398,7 @@ async function sendTeamsNotification(payload: LeadPayload) {
     `PV: ${formatHasPv(answers.hasPv)}${answers.pvPower ? `, ${answers.pvPower} kWp` : ""}`,
     `Magazyn: ${result.recommendedStorageKwh ? `${result.recommendedStorageKwh} kWh` : "brak"}`,
     `Zwrot: ${formatPaybackYears(result.paybackYearsLow, result.paybackYearsHigh)}`,
-    "",
+    ...(clientId ? [`CRM: ${buildCrmClientUrl(clientId)}`, ""] : []),
     "Źródło: magazyny.ideasol.pl",
   ].join("\n");
 
@@ -350,10 +444,12 @@ export async function POST(request: Request) {
       );
     }
 
+    const clientId = await insertLeadIntoCrm(payload);
+
     const results = await Promise.allSettled([
       sendInternalLeadEmail(payload),
       sendLeadResultEmail(payload),
-      sendTeamsNotification(payload),
+      sendTeamsNotification(payload, clientId),
     ]);
 
     results.forEach((result) => {
@@ -362,7 +458,7 @@ export async function POST(request: Request) {
       }
     });
 
-    return NextResponse.json({ ok: true }, { headers: getCorsHeaders(request) });
+    return NextResponse.json({ ok: true, clientId }, { headers: getCorsHeaders(request) });
   } catch (error) {
     console.error("energy-storage-lead error", error);
     return NextResponse.json(
