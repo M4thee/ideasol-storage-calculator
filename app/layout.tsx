@@ -24,7 +24,6 @@ export const metadata: Metadata = {
     ],
     apple: "/apple-touch-icon.png",
   },
-  manifest: "/site.webmanifest",
   openGraph: {
     title: "Kalkulator opłacalności instalacji fotowoltaicznej i magazynu energii | IdeaSol",
     description:
