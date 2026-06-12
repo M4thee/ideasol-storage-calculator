@@ -1421,9 +1421,11 @@ const canSubmitLead = Boolean(
                       <input
                         value={contactPostalCode}
                         onChange={(event) => {
-                          const value = event.target.value.replace(/[^0-9-]/g, "").slice(0, 6);
-                          setContactPostalCode(value);
+                          setContactPostalCode(formatPostalCode(event.target.value));
                         }}
+                        inputMode="numeric"
+                        autoComplete="postal-code"
+                        maxLength={6}
                         placeholder="np. 25-015"
                         className={contactInputClass}
                       />
