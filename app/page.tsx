@@ -1101,6 +1101,10 @@ const canSubmitLead = Boolean(
         throw new Error("Lead submit failed");
       }
 
+      if (typeof window !== "undefined" && (window as any).fbq) {
+        (window as any).fbq("track", "Lead");
+      }
+
       setLeadSubmitStatus("success");
     } catch (error) {
       console.error(error);
