@@ -350,7 +350,7 @@ function getRecommendation(params: {
   const caresAboutBackup = priorities.includes("Awaryjne zasilanie domu w razie awarii");
   const caresAboutEfficiency = priorities.includes("Zwiększenie produktywności mojej instalacji fotowoltaicznej (zapobieganie wyłączeniom)");
 
-  if (paybackYearsForRecommendation <= 7) {
+  if (paybackYearsForRecommendation <= 6) {
     return {
       type: "recommended",
       title: "Magazyn energii wygląda na dobrą inwestycję",
@@ -359,7 +359,7 @@ function getRecommendation(params: {
     };
   }
 
-  if (paybackYearsForRecommendation >= 8 && paybackYearsForRecommendation <= 11) {
+  if (paybackYearsForRecommendation >= 7 && paybackYearsForRecommendation <= 9) {
     return {
       type: "consider",
       title: "Magazyn energii warto rozważyć",
@@ -389,9 +389,9 @@ function getRecommendation(params: {
   if (caresAboutSavings) {
     return {
       type: "not_recommended",
-      title: "Magazyn energii ma ograniczoną opłacalność",
+      title: "Nie rekomendujemy magazynu wyłącznie ze względów finansowych",
       description:
-        "Przy obecnych założeniach inwestycja może zwracać się stosunkowo długo. Warto porozmawiać z doradcą o innych możliwościach obniżenia kosztów energii.",
+        "Przy obecnych założeniach okres zwrotu jest zbyt długi, żeby rekomendować magazyn energii wyłącznie jako inwestycję finansową. Warto porozmawiać z doradcą o innych możliwościach obniżenia kosztów energii.",
     };
   }
 
@@ -523,20 +523,20 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
   const isDarkMode = themeMode === "dark" || (themeMode === "auto" && systemTheme === "dark");
 
   const pageClass = isDarkMode
-    ? "relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,#0F172A_0,#061524_28%,#020617_58%,#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8"
-    : "relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,#ECFCCB_0,#CCFBF1_24%,#F8FAFC_58%,#E0E7FF_100%)] px-4 py-6 text-slate-950 sm:px-6 lg:px-8";
+    ? "relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,#0F172A_0,#061524_28%,#020617_58%,#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8"
+    : "relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,#ECFCCB_0,#CCFBF1_24%,#F8FAFC_58%,#E0E7FF_100%)] px-4 py-6 text-slate-950 sm:px-6 lg:px-8";
 
   const heroClass = isDarkMode
     ? "relative overflow-hidden rounded-[36px] border border-white/10 bg-slate-950 p-6 text-white shadow-2xl shadow-cyan-950/30 sm:p-10"
     : "relative overflow-hidden rounded-[36px] border border-white/80 bg-white/80 p-6 text-slate-950 shadow-2xl shadow-slate-950/10 backdrop-blur-xl sm:p-10";
 
   const panelClass = isDarkMode
-    ? "mx-auto w-full max-w-3xl scroll-mt-4 rounded-[32px] border border-white/10 bg-slate-900/80 p-5 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-8"
-    : "mx-auto w-full max-w-3xl scroll-mt-4 rounded-[32px] border border-white/80 bg-white/75 p-5 shadow-2xl shadow-slate-950/10 backdrop-blur-xl sm:p-8";
+    ? "mx-auto w-full min-w-0 max-w-3xl scroll-mt-4 rounded-[32px] border border-white/10 bg-slate-900/80 p-5 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-8"
+    : "mx-auto w-full min-w-0 max-w-3xl scroll-mt-4 rounded-[32px] border border-white/80 bg-white/75 p-5 shadow-2xl shadow-slate-950/10 backdrop-blur-xl sm:p-8";
 
   const resultPanelClass = isDarkMode
-    ? "space-y-6 rounded-[28px] bg-slate-950 p-6 text-white sm:p-8 [&_button]:text-white"
-    : "space-y-6 rounded-[28px] border border-slate-200 bg-white p-6 text-slate-950 shadow-xl shadow-slate-950/10 sm:p-8";
+    ? "space-y-6 rounded-[28px] overflow-hidden bg-slate-950 p-4 text-white sm:p-8 [&_button]:text-white"
+    : "space-y-6 rounded-[28px] overflow-hidden border border-slate-200 bg-white p-4 text-slate-950 shadow-xl shadow-slate-950/10 sm:p-8";
 
   const resultCardClass = isDarkMode
     ? "border-b border-white/10 py-4 text-white"
@@ -927,6 +927,12 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const paybackYearsLow = calculatePaybackYears(investmentLowAfterSubsidy, yearlySavingsHigh);
       const paybackYearsHigh = calculatePaybackYears(investmentHighAfterSubsidy, yearlySavingsLow);
 
+      const chartYearlyBillAfterInvestment = Math.max(0, yearlyBill - yearlySavingsLow);
+      const chartCostReductionPercent =
+        yearlyBill > 0
+          ? Math.round((1 - chartYearlyBillAfterInvestment / yearlyBill) * 100)
+          : 0;
+
       const baseRecommendation = getRecommendation({
         paybackYearsLow,
         paybackYearsHigh,
@@ -968,6 +974,9 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         pvStorageExportedKwh,
         pvStorageGridPurchaseKwh,
         pvStorageEstimatedBillAfterSystem,
+        currentYearlyBill: yearlyBill,
+        chartYearlyBillAfterInvestment,
+        chartCostReductionPercent,
         netBillingSavingsDetails,
         netMeteringSavingsDetails,
         yearlySavingsLow,
@@ -1286,19 +1295,109 @@ const canSubmitLead = Boolean(
     }}
     className="w-full rounded-2xl bg-gradient-to-r from-cyan-300 to-lime-300 px-5 py-4 text-left text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:-translate-y-0.5 hover:brightness-105"
   >
-    <span className="flex items-center justify-between gap-3">
-      <span>
-        <span className="block text-base font-extrabold">{showDetailedResult ? "Ukryj dokładny raport" : "Dokładny raport"}</span>
-        <span className="mt-1 block text-xs font-semibold text-slate-800/75">
-          {showDetailedResult ? "Schowaj szczegółowe liczby i założenia" : "Pokaż szczegółowe liczby i założenia"}
+    <span className="flex items-center justify-between gap-4">
+      <span
+        aria-hidden="true"
+        className="w-10 text-center text-3xl font-black leading-none"
+      >
+        {showDetailedResult ? "◀" : "▼"}
+      </span>
+
+      <span className="flex-1 text-center">
+        <span className="block text-xl font-extrabold sm:text-2xl">
+          {showDetailedResult ? "Ukryj dokładny raport" : "Dokładny raport"}
+        </span>
+        <span className="mt-2 block text-sm font-semibold text-slate-800/75 sm:text-base">
+          {showDetailedResult
+            ? "Schowaj szczegółowe liczby i założenia"
+            : "Pokaż szczegółowe liczby i założenia"}
         </span>
       </span>
-      <span aria-hidden="true" className="text-2xl font-extrabold">{showDetailedResult ? "↑" : "↓"}</span>
+
+      <span
+        aria-hidden="true"
+        className="w-10 text-center text-3xl font-black leading-none"
+      >
+        {showDetailedResult ? "▶" : "▼"}
+      </span>
     </span>
   </button>
 
   {showDetailedResult && (
     <div ref={detailedReportRef} className="space-y-0">
+                  <div className={resultCardClass}>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>
+                          Roczne koszty energii
+                        </p>
+                        <p className={`mt-1 text-xs ${mutedTextClass}`}>
+                          Porównanie obecnego kosztu energii z szacowanym kosztem po inwestycji.
+                        </p>
+                      </div>
+
+                      <div className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-extrabold ${isDarkMode ? "bg-lime-300 text-slate-950" : "bg-lime-200 text-slate-950"}`}>
+                        ↓ {result.chartCostReductionPercent}% kosztów
+                      </div>
+                    </div>
+
+                    <div className="mt-5">
+                      <div className={`relative ml-16 h-[220px] border-b border-l ${isDarkMode ? "border-white/10" : "border-slate-200"}`}>
+                        {[1, 0.75, 0.5, 0.25, 0].map((scaleValue) => (
+                          <div
+                            key={scaleValue}
+                            className={`absolute left-0 right-0 border-t ${isDarkMode ? "border-white/10" : "border-slate-200"}`}
+                            style={{ bottom: `${scaleValue * 100}%` }}
+                          >
+                            <span className={`absolute -left-16 -translate-y-1/2 text-[10px] ${mutedTextClass}`}>
+                              {formatMoney(result.currentYearlyBill * scaleValue)}
+                            </span>
+                          </div> 
+                        ))}
+
+                        <div className="absolute inset-x-0 bottom-0 flex h-full items-end justify-center gap-10 sm:gap-16">
+                          <div className="flex h-full flex-col items-center justify-end gap-2">
+                            <div
+                              className="w-20 rounded-t-xl shadow-lg sm:w-24"
+                              style={{
+                                height: "100%",
+                                backgroundColor: "#C80E0E",
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex h-full flex-col items-center justify-end gap-2">
+                            <div
+                              className="w-20 rounded-t-xl shadow-lg sm:w-24"
+                              style={{
+                                height: `${Math.max(
+                                  0,
+                                  Math.min(
+                                    100,
+                                    result.currentYearlyBill > 0
+                                      ? (result.chartYearlyBillAfterInvestment / result.currentYearlyBill) * 100
+                                      : 0
+                                  )
+                                )}%`,
+                                backgroundColor: "#BEFF67",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="ml-16 mt-3 flex justify-center gap-10 text-center sm:gap-16">
+                        <div className="w-20 sm:w-24">
+                          <div className={isDarkMode ? "text-sm font-extrabold text-white" : "text-sm font-extrabold text-slate-950"}>Obecnie</div>
+                          <div className={`mt-1 text-xs font-bold ${mutedTextClass}`}>{formatMoney(result.currentYearlyBill)}</div>
+                        </div>
+                        <div className="w-20 sm:w-24">
+                          <div className={isDarkMode ? "text-sm font-extrabold text-white" : "text-sm font-extrabold text-slate-950"}>Po inwestycji</div>
+                          <div className={`mt-1 text-xs font-bold ${mutedTextClass}`}>{formatMoney(result.chartYearlyBillAfterInvestment)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                   <div className={resultCardClass}>
                     <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>
                       {hasPv === "yes" ? "Szacowane całkowite zużycie energii" : "Szacowane roczne zużycie"}
