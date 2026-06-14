@@ -5,6 +5,7 @@ import Script from "next/script";
 
 declare global {
   interface Window {
+    fbq?: (...args: unknown[]) => void;
     turnstile?: {
       render: (
         element: HTMLElement,
@@ -454,6 +455,7 @@ const [turnstileToken, setTurnstileToken] = useState("");
 const [honeypot, setHoneypot] = useState("");
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 const turnstileRef = useRef<HTMLDivElement | null>(null);
+const hasTrackedResultViewRef = useRef(false);
 const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
 
   useEffect(() => {
@@ -499,6 +501,7 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       },
     });
   }, [turnstileSiteKey, isTurnstileLoaded, showResult]);
+
 
   function changeThemeMode(nextThemeMode: ThemeMode) {
     setThemeMode(nextThemeMode);
@@ -750,6 +753,7 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
     setMarketingConsent(false);
     setHoneypot("");
     setLeadSubmitStatus("idle");
+    hasTrackedResultViewRef.current = false;
     setHasStarted(false);
     scrollToElement(formRef.current);
   }
@@ -992,6 +996,23 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       };
     }, [hasPv, currentPvPowerKw, estimatedPvProductionKwh, settlementSystem, tariff, yearlyBill, yearlyConsumptionKwh, priorities]);
 
+  useEffect(() => {
+    if (!showResult || !result || hasTrackedResultViewRef.current) {
+      return;
+    }
+
+    if (typeof window !== "undefined" && window.fbq) {
+      window.fbq("track", "ViewContent", {
+        content_name: "energy_storage_calculator_result",
+        content_category: "calculator_result",
+        recommendation_type: result.recommendation.type,
+        recommended_storage_kwh: result.recommendedStorageKwh,
+        has_pv: hasPv,
+      });
+      hasTrackedResultViewRef.current = true;
+    }
+  }, [showResult, result, hasPv]);
+
   const hasValidPvDetails = hasPv !== "yes" || parseDecimal(pvPower) > 0;
 const canCalculate = Boolean(
   hasPv &&
@@ -1018,6 +1039,7 @@ const canSubmitLead = Boolean(
     setAnalysisStep(0);
     setExpandedResultDetails({});
     setShowDetailedResult(false);
+    hasTrackedResultViewRef.current = false;
 
     scrollToElement(formRef.current);
 
@@ -1101,8 +1123,14 @@ const canSubmitLead = Boolean(
         throw new Error("Lead submit failed");
       }
 
-      if (typeof window !== "undefined" && (window as any).fbq) {
-        (window as any).fbq("track", "Lead");
+      if (typeof window !== "undefined" && window.fbq) {
+        window.fbq("track", "Lead", {
+          content_name: "energy_storage_calculator_lead",
+          content_category: "lead_form",
+          recommendation_type: result.recommendation.type,
+          recommended_storage_kwh: result.recommendedStorageKwh,
+          has_pv: hasPv,
+        });
       }
 
       setLeadSubmitStatus("success");
