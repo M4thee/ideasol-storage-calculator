@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import Script from "next/script";
+import { normalizePolishMobilePhone } from "@/lib/polishMobilePhone";
 
 declare global {
   interface Window {
@@ -164,7 +165,7 @@ function formatPostalCode(value: string) {
   return `${digits.slice(0, 2)}-${digits.slice(2)}`;
 }
 
-function normalizePhone(value: string) {
+function formatPhoneInput(value: string) {
   return value.replace(/[^0-9+]/g, "").slice(0, 15);
 }
 
@@ -1160,10 +1161,13 @@ const canCalculate = Boolean(
     priorities.length > 0
 );
 
+const normalizedContactPhone = normalizePolishMobilePhone(contactPhone);
+const contactPhoneHasError = contactPhone.length > 0 && !normalizedContactPhone;
+
 const canSubmitLead = Boolean(
   contactFirstName.trim() &&
     contactPostalCode.length === 6 &&
-    contactPhone.replace(/\D/g, "").length >= 9 &&
+    normalizedContactPhone &&
     marketingConsent &&
     turnstileToken &&
     result &&
@@ -1209,7 +1213,7 @@ const canSubmitLead = Boolean(
   }
 
   async function submitLead() {
-    if (!canSubmitLead || !result) return;
+    if (!canSubmitLead || !result || !normalizedContactPhone) return;
 
     const metaEventId = createMetaLeadEventId();
 
@@ -1239,7 +1243,7 @@ const canSubmitLead = Boolean(
             firstName: contactFirstName.trim(),
             lastName: contactLastName.trim() || null,
             postalCode: contactPostalCode,
-            phone: contactPhone,
+            phone: normalizedContactPhone,
             email: contactEmail.trim() || null,
             turnstileToken,
           },
@@ -1972,11 +1976,18 @@ const canSubmitLead = Boolean(
                         name="tel"
                         autoComplete="tel"
                         value={contactPhone}
-                        onChange={(event) => setContactPhone(normalizePhone(event.target.value))}
+                        onChange={(event) => setContactPhone(formatPhoneInput(event.target.value))}
                         inputMode="tel"
                         placeholder="np. 500 600 700"
-                        className={contactInputClass}
+                        aria-invalid={contactPhoneHasError}
+                        aria-describedby={contactPhoneHasError ? "contact-phone-error" : undefined}
+                        className={`${contactInputClass} ${contactPhoneHasError ? "border-rose-400 ring-2 ring-rose-200/70" : ""}`}
                       />
+                      {contactPhoneHasError && (
+                        <span id="contact-phone-error" className={`mt-2 block text-xs font-semibold ${isDarkMode ? "text-rose-200" : "text-rose-700"}`}>
+                          Podaj prawidłowy polski numer komórkowy, np. 501 234 567.
+                        </span>
+                      )}
                     </label>
 
                     <label className="block sm:col-span-2">
