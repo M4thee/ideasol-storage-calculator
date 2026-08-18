@@ -53,6 +53,9 @@ type CalculatorAnalyticsDetails = {
   recommendedStorageKwh?: number;
   leadClientId?: string;
   hasPv?: Exclude<HasPv, null>;
+  errorCode?: string;
+  errorMessage?: string;
+  errorStatus?: number;
   useBeacon?: boolean;
 };
 
@@ -75,6 +78,9 @@ function sendCalculatorAnalyticsEvent(
     recommendedStorageKwh: details.recommendedStorageKwh,
     leadClientId: details.leadClientId,
     hasPv: details.hasPv,
+    errorCode: details.errorCode,
+    errorMessage: details.errorMessage,
+    errorStatus: details.errorStatus,
     landingUrl: window.location.href,
     referrer: document.referrer || null,
     utmSource: search.get("utm_source"),
@@ -530,7 +536,6 @@ const [isSubmittingLead, setIsSubmittingLead] = useState(false);
 const [leadSubmitStatus, setLeadSubmitStatus] =
   useState<"idle" | "success" | "error">("idle");
 const [turnstileToken, setTurnstileToken] = useState("");
-const [honeypot, setHoneypot] = useState("");
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 const turnstileRef = useRef<HTMLDivElement | null>(null);
 const hasTrackedResultViewRef = useRef(false);
@@ -866,7 +871,6 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
     setContactPhone("");
     setContactEmail("");
     setMarketingConsent(false);
-    setHoneypot("");
     setLeadSubmitStatus("idle");
     hasTrackedResultViewRef.current = false;
     setHasStarted(false);
@@ -1219,6 +1223,10 @@ const canSubmitLead = Boolean(
       hasPv: hasPv || undefined,
     });
 
+    let errorCode = "network_error";
+    let errorMessage = "Brak odpowiedzi serwera.";
+    let errorStatus: number | undefined;
+
     try {
       const response = await fetch("/api/public/energy-storage-lead", {
         method: "POST",
@@ -1234,7 +1242,6 @@ const canSubmitLead = Boolean(
             phone: contactPhone,
             email: contactEmail.trim() || null,
             turnstileToken,
-            honeypot,
           },
           answers: {
             hasPv,
@@ -1288,10 +1295,24 @@ const canSubmitLead = Boolean(
         ok?: boolean;
         clientId?: string;
         duplicate?: boolean;
+        error?: string;
+        skipped?: boolean;
       };
 
+      errorStatus = response.status;
+
       if (!response.ok || responseData.ok !== true || !responseData.clientId) {
-        throw new Error("Lead submit failed");
+        if (responseData.skipped) {
+          errorCode = "antispam_rejected";
+          errorMessage = "Zgłoszenie zostało odrzucone przez ochronę antyspamową.";
+        } else if (!response.ok) {
+          errorCode = `http_${response.status}`;
+          errorMessage = responseData.error || "Serwer nie przyjął zgłoszenia.";
+        } else {
+          errorCode = "missing_client_id";
+          errorMessage = "CRM nie potwierdził utworzenia klienta.";
+        }
+        throw new Error(errorMessage);
       }
 
       if (!responseData.duplicate && typeof window !== "undefined" && window.fbq) {
@@ -1330,6 +1351,10 @@ const canSubmitLead = Boolean(
       }, 120);
     } catch (error) {
       console.error(error);
+      if (error instanceof TypeError) {
+        errorCode = "network_error";
+        errorMessage = "Nie udało się połączyć z serwerem.";
+      }
       setLeadSubmitStatus("error");
       trackCalculatorEvent("lead_submit_failed", {
         stepNumber: 8,
@@ -1337,6 +1362,9 @@ const canSubmitLead = Boolean(
         recommendationType: result.recommendation.type,
         recommendedStorageKwh: result.recommendedStorageKwh,
         hasPv: hasPv || undefined,
+        errorCode,
+        errorMessage,
+        errorStatus,
       });
     } finally {
       setIsSubmittingLead(false);
@@ -1901,6 +1929,8 @@ const canSubmitLead = Boolean(
                     <label className="block">
                       <span className={contactLabelClass}>Imię *</span>
                       <input
+                        name="given-name"
+                        autoComplete="given-name"
                         value={contactFirstName}
                         onChange={(event) => setContactFirstName(event.target.value)}
                         placeholder="np. Jan"
@@ -1911,6 +1941,8 @@ const canSubmitLead = Boolean(
                     <label className="block">
                       <span className={contactLabelClass}>Nazwisko</span>
                       <input
+                        name="family-name"
+                        autoComplete="family-name"
                         value={contactLastName}
                         onChange={(event) => setContactLastName(event.target.value)}
                         placeholder="np. Kowalski"
@@ -1921,6 +1953,7 @@ const canSubmitLead = Boolean(
                     <label className="block">
                       <span className={contactLabelClass}>Kod pocztowy *</span>
                       <input
+                        name="postal-code"
                         value={contactPostalCode}
                         onChange={(event) => {
                           setContactPostalCode(formatPostalCode(event.target.value));
@@ -1936,6 +1969,8 @@ const canSubmitLead = Boolean(
                     <label className="block">
                       <span className={contactLabelClass}>Telefon *</span>
                       <input
+                        name="tel"
+                        autoComplete="tel"
                         value={contactPhone}
                         onChange={(event) => setContactPhone(normalizePhone(event.target.value))}
                         inputMode="tel"
@@ -1947,6 +1982,8 @@ const canSubmitLead = Boolean(
                     <label className="block sm:col-span-2">
                       <span className={contactLabelClass}>E-mail</span>
                       <input
+                        name="email"
+                        autoComplete="email"
                         value={contactEmail}
                         onChange={(event) => setContactEmail(event.target.value)}
                         inputMode="email"
@@ -1955,24 +1992,6 @@ const canSubmitLead = Boolean(
                       />
                     </label>
 
-                    <div
-                      aria-hidden="true"
-                      style={{
-                        position: "absolute",
-                        left: "-9999px",
-                        opacity: 0,
-                        pointerEvents: "none",
-                      }}
-                    >
-                      <input
-                        type="text"
-                        name="website"
-                        autoComplete="off"
-                        tabIndex={-1}
-                        value={honeypot}
-                        onChange={(event) => setHoneypot(event.target.value)}
-                      />
-                    </div>
                     <label className={`sm:col-span-2 flex items-start gap-3 rounded-xl border p-3 ${isDarkMode ? "border-white/10 bg-white/5" : "border-slate-200 bg-white/70"}`}>
                       <input
                         type="checkbox"

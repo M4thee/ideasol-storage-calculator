@@ -104,6 +104,9 @@ function sanitizeEventPayload(body: Record<string, unknown>) {
   const hasPv = limitedText(body.hasPv, 8);
   const question = limitedText(body.question, 300);
   const answer = limitedText(body.answer, 2_000);
+  const errorCode = limitedText(body.errorCode, 80);
+  const errorMessage = limitedText(body.errorMessage, 500);
+  const errorStatus = Number(body.errorStatus);
   const recommendedStorageKwh = Number(body.recommendedStorageKwh);
 
   if (recommendationType === "recommended" || recommendationType === "not_recommended") {
@@ -113,6 +116,11 @@ function sanitizeEventPayload(body: Record<string, unknown>) {
   if (hasPv === "yes" || hasPv === "no") payload.has_pv = hasPv;
   if (question) payload.question = question;
   if (answer) payload.answer = answer;
+  if (errorCode) payload.error_code = errorCode;
+  if (errorMessage) payload.error_message = errorMessage;
+  if (Number.isInteger(errorStatus) && errorStatus >= 100 && errorStatus <= 599) {
+    payload.error_status = errorStatus;
+  }
   if (Number.isFinite(recommendedStorageKwh) && recommendedStorageKwh > 0 && recommendedStorageKwh <= 100) {
     payload.recommended_storage_kwh = recommendedStorageKwh;
   }
