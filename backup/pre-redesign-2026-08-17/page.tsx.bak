@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Script from "next/script";
 
@@ -32,77 +31,6 @@ type ThemeMode = "auto" | "light" | "dark";
 
 type RecommendationType = "recommended" | "not_recommended";
 
-type CalculatorAnalyticsEvent =
-  | "calculator_view"
-  | "calculator_started"
-  | "step_view"
-  | "analysis_started"
-  | "recommendation_shown"
-  | "lead_submit_attempt"
-  | "lead_submit_success"
-  | "lead_submit_failed"
-  | "report_unlocked"
-  | "session_closed";
-
-type CalculatorAnalyticsDetails = {
-  stepNumber?: number;
-  stepKey?: string;
-  question?: string;
-  answer?: string;
-  recommendationType?: RecommendationType;
-  recommendedStorageKwh?: number;
-  leadClientId?: string;
-  hasPv?: Exclude<HasPv, null>;
-  useBeacon?: boolean;
-};
-
-function sendCalculatorAnalyticsEvent(
-  sessionId: string,
-  eventName: CalculatorAnalyticsEvent,
-  details: CalculatorAnalyticsDetails = {}
-) {
-  if (typeof window === "undefined") return;
-
-  const search = new URLSearchParams(window.location.search);
-  const payload = JSON.stringify({
-    sessionId,
-    eventName,
-    stepNumber: details.stepNumber,
-    stepKey: details.stepKey,
-    question: details.question,
-    answer: details.answer,
-    recommendationType: details.recommendationType,
-    recommendedStorageKwh: details.recommendedStorageKwh,
-    leadClientId: details.leadClientId,
-    hasPv: details.hasPv,
-    landingUrl: window.location.href,
-    referrer: document.referrer || null,
-    utmSource: search.get("utm_source"),
-    utmMedium: search.get("utm_medium"),
-    utmCampaign: search.get("utm_campaign"),
-    utmContent: search.get("utm_content"),
-    utmTerm: search.get("utm_term"),
-    deviceType: window.innerWidth < 640 ? "mobile" : window.innerWidth < 1024 ? "tablet" : "desktop",
-    screenWidth: window.screen.width,
-    screenHeight: window.screen.height,
-  });
-
-  if (details.useBeacon && navigator.sendBeacon) {
-    navigator.sendBeacon(
-      "/api/analytics/calculator-event",
-      new Blob([payload], { type: "application/json" })
-    );
-    return;
-  }
-
-  void fetch("/api/analytics/calculator-event", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: payload,
-    keepalive: true,
-  }).catch(() => undefined);
-}
-
 const ENERGY_PRICE_PER_KWH = 0.95;
 const NET_BILLING_EXPORT_PRICE_PER_KWH = 0.34;
 const NET_BILLING_BASE_AUTOCONSUMPTION_RATE = 0.2;
@@ -113,27 +41,8 @@ const STORAGE_USABLE_CAPACITY_RATE = 0.9;
 const STORAGE_CYCLES_PER_YEAR = 250;
 const MAX_SHIFTABLE_EXPORT_SHARE = 0.7;
 const ESTIMATED_FIXED_YEARLY_ENERGY_COST = 420;
-const ANNUAL_ENERGY_PRICE_GROWTH = 0.09;
+const ANNUAL_ENERGY_PRICE_GROWTH = 0.025;
 const PV_PRODUCTION_PER_KWP = 1005;
-const EU_EQUIPMENT_SUBSIDY_BONUS = 2000;
-
-function calculateMaximumPmeSubsidy(params: {
-  billingSystem: SettlementSystem;
-  storageCapacityKwh: number;
-}) {
-  const programCap = params.billingSystem === "net_metering" ? 8000 : 16000;
-  const storageCapacityKwh = Math.max(0, params.storageCapacityKwh);
-  const storageCapByKwh = storageCapacityKwh * 800;
-  const maxStorageSubsidy = Math.min(storageCapByKwh, programCap);
-  const euBonus = EU_EQUIPMENT_SUBSIDY_BONUS;
-
-  return {
-    storageSubsidy: Math.round(maxStorageSubsidy),
-    euBonus: Math.round(euBonus),
-    total: Math.round(maxStorageSubsidy + euBonus),
-    maxStorageSubsidy: Math.round(maxStorageSubsidy),
-  };
-}
 
 function formatMoney(value: number) {
   return new Intl.NumberFormat("pl-PL", {
@@ -161,27 +70,6 @@ function formatPostalCode(value: string) {
 function normalizePhone(value: string) {
   return value.replace(/[^0-9+]/g, "").slice(0, 15);
 }
-
-function getBrowserCookie(name: string) {
-  if (typeof document === "undefined") return null;
-
-  const prefix = `${encodeURIComponent(name)}=`;
-  const cookie = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix));
-
-  return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
-}
-
-function createMetaLeadEventId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `lead:${crypto.randomUUID()}`;
-  }
-
-  return `lead:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-}
-
 function pickStorageVariant(requiredKwh: number) {
   if (requiredKwh <= 10) return 10;
   if (requiredKwh <= 16) return 16;
@@ -496,8 +384,8 @@ function getRecommendationBoxClass(type: RecommendationType) {
 }
 
 function getRecommendationBadge(type: RecommendationType) {
-  if (type === "recommended") return "✅ REKOMENDUJEMY MAGAZYN ENERGII";
-  return "🛑 NIE REKOMENDUJEMY MAGAZYNU ENERGII";
+  if (type === "recommended") return "✅ Rekomendacja pozytywna";
+  return "🛑 NIE REKOMENDUJEMY";
 }
 
 export default function EnergyStorageCalculatorPage() {
@@ -534,40 +422,7 @@ const [honeypot, setHoneypot] = useState("");
 const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 const turnstileRef = useRef<HTMLDivElement | null>(null);
 const hasTrackedResultViewRef = useRef(false);
-const analyticsSessionIdRef = useRef<string | null>(null);
-const analyticsMaxStageRef = useRef(0);
-const trackedStepViewsRef = useRef<Set<string>>(new Set());
 const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
-
-  const trackCalculatorEvent = useCallback(
-    (eventName: CalculatorAnalyticsEvent, details: CalculatorAnalyticsDetails = {}) => {
-      const sessionId = analyticsSessionIdRef.current;
-      if (!sessionId) return;
-
-      if (typeof details.stepNumber === "number") {
-        analyticsMaxStageRef.current = Math.max(analyticsMaxStageRef.current, details.stepNumber);
-      }
-      sendCalculatorAnalyticsEvent(sessionId, eventName, details);
-    },
-    []
-  );
-
-  useEffect(() => {
-    const sessionId = window.crypto.randomUUID();
-    analyticsSessionIdRef.current = sessionId;
-    sendCalculatorAnalyticsEvent(sessionId, "calculator_view", { stepNumber: 0, stepKey: "wejscie" });
-
-    const closeSession = () => {
-      sendCalculatorAnalyticsEvent(sessionId, "session_closed", {
-        stepNumber: analyticsMaxStageRef.current,
-        stepKey: "wyjscie",
-        useBeacon: true,
-      });
-    };
-
-    window.addEventListener("pagehide", closeSession);
-    return () => window.removeEventListener("pagehide", closeSession);
-  }, []);
 
   useEffect(() => {
     const savedThemeMode = window.localStorage.getItem("energyStorageCalculatorTheme") as ThemeMode | null;
@@ -621,6 +476,7 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
   }
 
   const formRef = useRef<HTMLDivElement | null>(null);
+  const step3Ref = useRef<HTMLDivElement | null>(null);
   const pvDetailsRef = useRef<HTMLDivElement | null>(null);
   const step4Ref = useRef<HTMLDivElement | null>(null);
   const step5Ref = useRef<HTMLDivElement | null>(null);
@@ -637,38 +493,46 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
   const isDarkMode = themeMode === "dark" || (themeMode === "auto" && systemTheme === "dark");
 
   const pageClass = isDarkMode
-    ? "relative min-h-screen overflow-x-hidden bg-[#071510] px-4 pb-16 pt-4 text-white sm:px-6 lg:px-8"
-    : "relative min-h-screen overflow-x-hidden bg-[#f4f5ef] px-4 pb-16 pt-4 text-[#13231d] sm:px-6 lg:px-8";
+    ? "relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,#0F172A_0,#061524_28%,#020617_58%,#050816_100%)] px-4 py-6 text-white sm:px-6 lg:px-8"
+    : "relative min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top_left,#ECFCCB_0,#CCFBF1_24%,#F8FAFC_58%,#E0E7FF_100%)] px-4 py-6 text-slate-950 sm:px-6 lg:px-8";
 
   const heroClass = isDarkMode
-    ? "relative overflow-hidden rounded-[32px] border border-white/10 bg-[#10261f] text-white shadow-2xl shadow-black/20"
-    : "relative overflow-hidden rounded-[32px] border border-[#13231d]/10 bg-[#10261f] text-white shadow-[0_30px_90px_rgba(16,38,31,0.18)]";
+    ? "relative overflow-hidden rounded-[36px] border border-white/10 bg-slate-950 p-6 text-white shadow-2xl shadow-cyan-950/30 sm:p-10"
+    : "relative overflow-hidden rounded-[36px] border border-white/80 bg-white/80 p-6 text-slate-950 shadow-2xl shadow-slate-950/10 backdrop-blur-xl sm:p-10";
 
   const panelClass = isDarkMode
-    ? "mx-auto w-full min-w-0 max-w-4xl scroll-mt-6 rounded-[30px] border border-white/10 bg-[#10261f] p-5 shadow-2xl shadow-black/20 sm:p-9"
-    : "mx-auto w-full min-w-0 max-w-4xl scroll-mt-6 rounded-[30px] border border-[#13231d]/10 bg-white/80 p-5 shadow-[0_24px_70px_rgba(16,38,31,0.10)] backdrop-blur sm:p-9";
+    ? "mx-auto w-full min-w-0 max-w-3xl scroll-mt-4 rounded-[32px] border border-white/10 bg-slate-900/80 p-5 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-8"
+    : "mx-auto w-full min-w-0 max-w-3xl scroll-mt-4 rounded-[32px] border border-white/80 bg-white/75 p-5 shadow-2xl shadow-slate-950/10 backdrop-blur-xl sm:p-8";
 
   const resultPanelClass = isDarkMode
-    ? "space-y-6 overflow-hidden rounded-[26px] bg-[#091a14] p-4 text-white sm:p-8 [&_button]:text-white"
-    : "space-y-6 overflow-hidden rounded-[26px] border border-[#13231d]/10 bg-[#fbfcf8] p-4 text-[#13231d] shadow-xl shadow-[#10261f]/5 sm:p-8";
+    ? "space-y-6 rounded-[28px] overflow-hidden bg-slate-950 p-4 text-white sm:p-8 [&_button]:text-white"
+    : "space-y-6 rounded-[28px] overflow-hidden border border-slate-200 bg-white p-4 text-slate-950 shadow-xl shadow-slate-950/10 sm:p-8";
 
   const resultCardClass = isDarkMode
     ? "border-b border-white/10 py-4 text-white"
-    : "border-b border-[#13231d]/10 py-4";
+    : "border-b border-slate-200 py-4";
 
-  const mutedTextClass = isDarkMode ? "text-white/62" : "text-[#617069]";
+  const mutedTextClass = isDarkMode ? "text-[#D8CEC7]" : "text-slate-500";
 
-  const eyebrowTextClass = isDarkMode ? "text-[#c7f36b]" : "text-[#397f72]";
+  const eyebrowTextClass = isDarkMode ? "text-cyan-300" : "text-cyan-700";
+
+  const secondaryButtonClass = isDarkMode
+    ? "rounded-2xl border border-white/15 bg-white/10 px-5 py-3 font-bold text-white transition hover:bg-white/15"
+    : "rounded-2xl border border-slate-200 bg-slate-950 px-5 py-3 font-bold text-white transition hover:-translate-y-0.5 hover:bg-slate-800";
+
+  const ghostButtonClass = isDarkMode
+    ? "rounded-2xl border border-white/15 bg-white/5 px-5 py-3 font-bold text-white/80 transition hover:bg-white/10 hover:text-white"
+    : "rounded-2xl border border-slate-200 bg-white px-5 py-3 font-bold text-slate-700 transition hover:bg-slate-50 hover:text-slate-950";
 
   const themeButtonClass = (mode: ThemeMode) =>
     `rounded-full px-3 py-2 text-xs font-bold transition ${
       themeMode === mode
         ? isDarkMode
-          ? "bg-[#c7f36b] text-[#10261f]"
-          : "bg-[#10261f] text-white"
+          ? "bg-cyan-300 text-slate-950"
+          : "bg-slate-950 text-white"
         : isDarkMode
           ? "bg-white/10 text-white/70 hover:bg-white/15 hover:text-white"
-          : "bg-white/70 text-[#617069] hover:bg-white hover:text-[#13231d]"
+          : "bg-white/80 text-slate-600 hover:bg-white hover:text-slate-950"
     }`;
 
   const optionButtonClass = (isSelected: boolean, variant: "card" | "compact" = "card") => {
@@ -677,49 +541,49 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
     return `${sizeClass} border text-left shadow-sm transition touch-manipulation hover:-translate-y-0.5 hover:shadow-md ${
       isSelected
         ? isDarkMode
-          ? "border-[#c7f36b] bg-[#c7f36b]/12 text-white"
-          : "border-[#397f72] bg-[#dff3d5] text-[#13231d]"
+          ? "border-cyan-300 bg-cyan-300/15 text-white"
+          : "border-cyan-500 bg-cyan-100 text-slate-950"
         : isDarkMode
           ? "border-white/10 bg-white/10 text-white hover:bg-white/15"
-          : "border-[#13231d]/10 bg-white/90 text-[#13231d] hover:border-[#397f72]/35 hover:bg-[#f8faf5]"
+          : "border-slate-200 bg-white/90 text-slate-950 hover:bg-slate-50"
     }`;
   };
 
   const inputClass = isDarkMode
-    ? "rounded-2xl border border-white/10 bg-white/10 px-4 py-3 font-medium text-white shadow-sm outline-none transition placeholder:text-white/40 focus:border-[#c7f36b] focus:ring-4 focus:ring-[#c7f36b]/10"
-    : "rounded-2xl border border-[#13231d]/12 bg-white px-4 py-3 font-medium text-[#13231d] shadow-sm outline-none transition placeholder:text-[#8d9993] focus:border-[#397f72] focus:ring-4 focus:ring-[#8edbd2]/20";
+    ? "rounded-2xl border border-white/10 bg-white/10 px-4 py-3 font-medium text-white shadow-sm outline-none transition placeholder:text-white/40 focus:border-cyan-300 focus:ring-4 focus:ring-cyan-300/10"
+    : "rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 font-medium text-slate-950 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100";
 
-  const labelClass = isDarkMode ? "text-sm font-semibold text-white/70" : "text-sm font-semibold text-[#52645d]";
+  const labelClass = isDarkMode ? "text-sm font-semibold text-white/70" : "text-sm font-semibold text-slate-600";
 
   const hintBoxClass = isDarkMode
-    ? "mt-4 rounded-[22px] border border-[#8edbd2]/20 bg-[#8edbd2]/10 p-4 text-sm leading-6 text-white/80"
-    : "mt-4 rounded-[22px] border border-[#397f72]/15 bg-[#e9f6f1] p-4 text-sm leading-6 text-[#40534b]";
+    ? "mt-4 rounded-[22px] border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm leading-6 text-cyan-50 shadow-sm"
+    : "mt-4 rounded-[22px] border border-cyan-200 bg-cyan-50/80 p-4 text-sm leading-6 text-slate-700 shadow-sm";
 
   const priorityHintBoxClass = isDarkMode
-    ? "mt-2 rounded-[20px] border border-[#8edbd2]/20 bg-[#8edbd2]/10 p-4 text-sm leading-6 text-white/80 animate-[fadeInUp_0.35s_ease-out]"
-    : "mt-2 rounded-[20px] border border-[#397f72]/15 bg-[#e9f6f1] p-4 text-sm leading-6 text-[#40534b] animate-[fadeInUp_0.35s_ease-out]";
+    ? "mt-2 rounded-[20px] border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm leading-6 text-cyan-50 shadow-sm animate-[fadeInUp_0.35s_ease-out]"
+    : "mt-2 rounded-[20px] border border-cyan-200 bg-cyan-50/80 p-4 text-sm leading-6 text-slate-700 shadow-sm animate-[fadeInUp_0.35s_ease-out]";
 
   const backButtonClass = isDarkMode
     ? "mt-5 w-full rounded-2xl border border-white/10 bg-white/10 px-5 py-3 font-bold text-white transition hover:bg-white/15"
-    : "mt-5 w-full rounded-2xl border border-[#13231d]/10 bg-white px-5 py-3 font-bold text-[#52645d] transition hover:bg-[#f4f5ef] hover:text-[#13231d]";
+    : "mt-5 w-full rounded-2xl border border-slate-200 bg-white/80 px-5 py-3 font-bold text-slate-700 transition hover:bg-white hover:text-slate-950";
 
   const primaryButtonClass = isDarkMode
-    ? "w-full rounded-2xl bg-[#c7f36b] px-5 py-3 font-bold text-[#10261f] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-[#b9ed54] disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-white/40 disabled:shadow-none"
-    : "w-full rounded-2xl bg-[#10261f] px-5 py-3 font-bold text-white shadow-lg shadow-[#10261f]/15 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-[#aeb8b2] disabled:shadow-none";
+    ? "w-full rounded-2xl bg-cyan-300 px-5 py-3 font-bold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:-translate-y-0.5 hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-white/50 disabled:shadow-none"
+    : "w-full rounded-2xl bg-slate-950 px-5 py-3 font-bold text-white shadow-lg shadow-slate-950/15 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:shadow-none";
 
   const contactPanelClass = isDarkMode
-    ? "rounded-[24px] border border-[#c7f36b]/20 bg-[#c7f36b]/8 p-5 text-white shadow-xl shadow-black/10"
-    : "rounded-[24px] border border-[#397f72]/15 bg-[#dff3d5] p-5 text-[#13231d] shadow-xl shadow-[#10261f]/5";
+    ? "rounded-[24px] border border-lime-300/20 bg-gradient-to-br from-lime-300/10 to-white/5 p-5 text-white shadow-2xl shadow-lime-950/20"
+    : "rounded-[24px] border border-lime-200 bg-gradient-to-br from-lime-50 to-white p-5 text-slate-950 shadow-2xl shadow-lime-100";
 
-  const contactLabelClass = isDarkMode ? "text-sm font-semibold text-white/75" : "text-sm font-semibold text-[#40534b]";
+  const contactLabelClass = isDarkMode ? "text-sm font-semibold text-white/75" : "text-sm font-semibold text-slate-700";
 
   const contactInputClass = isDarkMode
-    ? "mt-1 w-full rounded-2xl border border-white/10 bg-white/10 px-4 py-3 font-medium text-white outline-none transition placeholder:text-white/40 focus:border-[#c7f36b] focus:ring-4 focus:ring-[#c7f36b]/10"
-    : "mt-1 w-full rounded-2xl border border-[#13231d]/12 bg-white px-4 py-3 font-medium text-[#13231d] outline-none transition placeholder:text-[#8d9993] focus:border-[#397f72] focus:ring-4 focus:ring-[#8edbd2]/20";
+    ? "mt-1 w-full rounded-2xl border border-white/10 bg-white/10 px-4 py-3 font-medium text-white outline-none transition placeholder:text-white/40 focus:border-cyan-300 focus:ring-4 focus:ring-cyan-300/10"
+    : "mt-1 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-medium text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100";
 
   const contactSubmitButtonClass = isDarkMode
-    ? "mt-4 w-full rounded-2xl bg-[#c7f36b] px-5 py-3 font-bold text-[#10261f] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-white/40 disabled:shadow-none"
-    : "mt-4 w-full rounded-2xl bg-[#10261f] px-5 py-3 font-bold text-white shadow-lg shadow-[#10261f]/15 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-[#aeb8b2] disabled:shadow-none";
+    ? "mt-4 w-full rounded-2xl bg-cyan-300 px-5 py-3 font-bold text-slate-950 shadow-lg shadow-cyan-950/20 transition hover:-translate-y-0.5 hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-white/50 disabled:shadow-none"
+    : "mt-4 w-full rounded-2xl bg-slate-950 px-5 py-3 font-bold text-white shadow-lg shadow-slate-950/20 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:shadow-none";
 
   const tariffHint = {
     G11: "Taryfa G11 nie wykorzystuje w pełni potencjału magazynów energii. Zalecane są taryfy G12/G13 lub taryfy dynamiczne. Nasz doradca pomoże wybrać Ci najlepsze rozwiązanie.",
@@ -785,7 +649,6 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
   function startAnalysis() {
     setHasStarted(true);
     goToStep(2);
-    trackCalculatorEvent("calculator_started", { stepNumber: 1, stepKey: "start" });
 
     window.setTimeout(() => {
       scrollToElement(formRef.current);
@@ -795,15 +658,6 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
   function selectHasPv(value: Exclude<HasPv, null>) {
     setHasPv(value);
     setShowResult(false);
-    trackCalculatorEvent("step_view", {
-      stepNumber: 1,
-      stepKey: "odpowiedz_czy_masz_fotowoltaike",
-      question: "Czy masz już instalację fotowoltaiczną?",
-      answer: value === "yes"
-        ? "Tak, mam instalację fotowoltaiczną i chcę dobrać do niej magazyn energii"
-        : "Nie, ale chcę mieć fotowoltaikę wraz z magazynem energii",
-      hasPv: value,
-    });
 
     if (value === "yes") {
       goToStep(3);
@@ -1044,11 +898,17 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
           ? getMarketingPriceRange(baseCalculatorPriceWithoutSellerMarkup)
           : getPvStorageMarketingPriceRange(suggestedPvKw, recommendedStorageKwh);
 
-      const subsidy = calculateMaximumPmeSubsidy({
-        billingSystem: settlementSystem,
-        storageCapacityKwh: recommendedStorageKwh,
-      });
-      const subsidyEstimate = subsidy.total;
+      const storageSubsidyCap = settlementSystem === "net_metering" ? 8000 : 16000;
+      const [storageOnlyPriceLow] = getMarketingPriceRange(
+        getOnlyStorageBasePriceWithoutSellerMarkup(recommendedStorageKwh)
+      );
+      const subsidyEstimate = Math.round(
+        Math.min(
+          recommendedStorageKwh * 800,
+          storageSubsidyCap,
+          storageOnlyPriceLow * 0.3
+        ) + 2000
+      );
 
       const investmentLowAfterSubsidy = Math.max(0, priceLow - subsidyEstimate);
       const investmentHighAfterSubsidy = Math.max(0, priceHigh - subsidyEstimate);
@@ -1111,9 +971,6 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         priceLow,
         priceHigh,
         subsidyEstimate,
-        subsidyStorage: subsidy.storageSubsidy,
-        subsidyEuBonus: subsidy.euBonus,
-        subsidyStorageLimit: subsidy.maxStorageSubsidy,
         paybackYearsLow,
         paybackYearsHigh,
         paybackYearsWithoutSubsidyLow,
@@ -1135,16 +992,9 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         recommended_storage_kwh: result.recommendedStorageKwh,
         has_pv: hasPv,
       });
+      hasTrackedResultViewRef.current = true;
     }
-    hasTrackedResultViewRef.current = true;
-    trackCalculatorEvent("recommendation_shown", {
-      stepNumber: 7,
-      stepKey: "rekomendacja_i_formularz",
-      recommendationType: result.recommendation.type,
-      recommendedStorageKwh: result.recommendedStorageKwh,
-      hasPv: hasPv || undefined,
-    });
-  }, [showResult, result, hasPv, trackCalculatorEvent]);
+  }, [showResult, result, hasPv]);
 
   const hasValidPvDetails = hasPv !== "yes" || parseDecimal(pvPower) > 0;
 const canCalculate = Boolean(
@@ -1168,18 +1018,6 @@ const canSubmitLead = Boolean(
 
   function handleCalculate() {
     if (!canCalculate) return;
-    trackCalculatorEvent("step_view", {
-      stepNumber: hasPv === "yes" ? 5 : 4,
-      stepKey: "odpowiedz_priorytety",
-      question: "Co jest dla Ciebie najważniejsze?",
-      answer: priorities.join("; "),
-      hasPv: hasPv || undefined,
-    });
-    trackCalculatorEvent("analysis_started", {
-      stepNumber: 6,
-      stepKey: "analiza",
-      hasPv: hasPv || undefined,
-    });
     setIsAnalyzing(true);
     setShowResult(false);
     setAnalysisStep(0);
@@ -1207,17 +1045,8 @@ const canSubmitLead = Boolean(
   async function submitLead() {
     if (!canSubmitLead || !result) return;
 
-    const metaEventId = createMetaLeadEventId();
-
     setIsSubmittingLead(true);
     setLeadSubmitStatus("idle");
-    trackCalculatorEvent("lead_submit_attempt", {
-      stepNumber: 8,
-      stepKey: "wysylka_formularza",
-      recommendationType: result.recommendation.type,
-      recommendedStorageKwh: result.recommendedStorageKwh,
-      hasPv: hasPv || undefined,
-    });
 
     try {
       const response = await fetch("/api/public/energy-storage-lead", {
@@ -1275,177 +1104,116 @@ const canSubmitLead = Boolean(
             paybackYearsWithoutSubsidyLow: result.paybackYearsWithoutSubsidyLow,
             paybackYearsWithoutSubsidyHigh: result.paybackYearsWithoutSubsidyHigh,
           },
-          meta: {
-            eventId: metaEventId,
-            eventSourceUrl: window.location.href,
-            fbp: getBrowserCookie("_fbp"),
-            fbc: getBrowserCookie("_fbc"),
-          },
         }),
       });
 
       const responseData = await response.json().catch(() => ({})) as {
         ok?: boolean;
         clientId?: string;
-        duplicate?: boolean;
       };
 
       if (!response.ok || responseData.ok !== true || !responseData.clientId) {
         throw new Error("Lead submit failed");
       }
 
-      if (!responseData.duplicate && typeof window !== "undefined" && window.fbq) {
+      if (typeof window !== "undefined" && window.fbq) {
         window.fbq("track", "Lead", {
           content_name: "energy_storage_calculator_lead",
           content_category: "lead_form",
           recommendation_type: result.recommendation.type,
           recommended_storage_kwh: result.recommendedStorageKwh,
           has_pv: hasPv,
-        }, {
-          eventID: metaEventId,
         });
       }
 
       setLeadSubmitStatus("success");
       setIsFullReportUnlocked(true);
       setShowDetailedResult(true);
-      trackCalculatorEvent("lead_submit_success", {
-        stepNumber: 9,
-        stepKey: "lead_w_crm",
-        recommendationType: result.recommendation.type,
-        recommendedStorageKwh: result.recommendedStorageKwh,
-        leadClientId: responseData.clientId,
-        hasPv: hasPv || undefined,
-      });
-      trackCalculatorEvent("report_unlocked", {
-        stepNumber: 10,
-        stepKey: "pelny_raport",
-        recommendationType: result.recommendation.type,
-        recommendedStorageKwh: result.recommendedStorageKwh,
-        leadClientId: responseData.clientId,
-        hasPv: hasPv || undefined,
-      });
       window.setTimeout(() => {
         scrollToElement(detailedReportRef.current);
       }, 120);
     } catch (error) {
       console.error(error);
       setLeadSubmitStatus("error");
-      trackCalculatorEvent("lead_submit_failed", {
-        stepNumber: 8,
-        stepKey: "blad_wysylki_formularza",
-        recommendationType: result.recommendation.type,
-        recommendedStorageKwh: result.recommendedStorageKwh,
-        hasPv: hasPv || undefined,
-      });
     } finally {
       setIsSubmittingLead(false);
     }
   }
 
-  const currentFormStep = step === 2 ? 1 : hasPv === "no" ? step - 2 : step - 1;
-  const totalFormSteps = hasPv === "yes" ? 5 : 4;
-
-  useEffect(() => {
-    if (!hasStarted || isAnalyzing || showResult) return;
-
-    const stepKey = `krok_${currentFormStep}_${hasPv || "nie_wybrano"}`;
-    if (trackedStepViewsRef.current.has(stepKey)) return;
-    trackedStepViewsRef.current.add(stepKey);
-    trackCalculatorEvent("step_view", {
-      stepNumber: Math.min(5, Math.max(1, currentFormStep)),
-      stepKey,
-      hasPv: hasPv || undefined,
-    });
-  }, [currentFormStep, hasPv, hasStarted, isAnalyzing, showResult, trackCalculatorEvent]);
-
   return (
     <main className={pageClass}>
-      <div className="relative z-10 mx-auto flex max-w-7xl flex-col gap-9">
-        <header className="flex items-center justify-between gap-4 py-1">
-          <Link href="/" className="flex items-center gap-3" aria-label="IdeaSol — kalkulator magazynu energii">
-            <span className={`flex h-11 w-11 items-center justify-center rounded-2xl ${isDarkMode ? "bg-white/10" : "bg-[#10261f]"}`}>
-              <Image src="/logo.png" alt="" width={34} height={34} className="h-8 w-8 object-contain" priority />
-            </span>
-            <span>
-              <span className="block text-lg font-black tracking-[-0.03em]">IdeaSol</span>
-              <span className={`block text-[10px] font-bold uppercase tracking-[0.18em] ${mutedTextClass}`}>Kalkulator energii</span>
-            </span>
-          </Link>
-          <div className="flex items-center gap-3">
-            <Link href="/blog" className={`hidden text-sm font-bold transition hover:opacity-70 sm:block ${mutedTextClass}`}>Baza wiedzy</Link>
-            <div className={`inline-flex rounded-full border p-1 ${isDarkMode ? "border-white/10 bg-white/5" : "border-[#13231d]/10 bg-white/60"}`}>
-              <button type="button" aria-label="Motyw automatyczny" onClick={() => changeThemeMode("auto")} className={themeButtonClass("auto")}>Auto</button>
-              <button type="button" aria-label="Jasny motyw" onClick={() => changeThemeMode("light")} className={themeButtonClass("light")}>Jasny</button>
-              <button type="button" aria-label="Ciemny motyw" onClick={() => changeThemeMode("dark")} className={themeButtonClass("dark")}>Ciemny</button>
-            </div>
+      <div className="relative z-10 mx-auto flex max-w-5xl flex-col gap-8">
+        <div className="flex justify-end">
+          <div className={`inline-flex rounded-full border p-1 shadow-sm backdrop-blur ${isDarkMode ? "border-white/10 bg-white/5" : "border-white/70 bg-white/60"}`}>
+            <button type="button" onClick={() => changeThemeMode("auto")} className={themeButtonClass("auto")}>🌓 Auto</button>
+            <button type="button" onClick={() => changeThemeMode("light")} className={themeButtonClass("light")}>☀️ Jasny</button>
+            <button type="button" onClick={() => changeThemeMode("dark")} className={themeButtonClass("dark")}>🌙 Ciemny</button>
           </div>
-        </header>
+        </div>
         <section className={heroClass}>
-          <div className="grid lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="relative z-10 flex flex-col justify-center p-7 sm:p-10 lg:p-14">
-              <p className="inline-flex w-fit rounded-full border border-white/12 bg-white/8 px-4 py-2 text-xs font-black uppercase tracking-[0.15em] text-[#9ee5d9]">
-                Bezpłatna analiza • około 60 sekund
-              </p>
-              <h1 className="mt-6 max-w-2xl text-4xl font-black leading-[0.98] tracking-[-0.05em] text-white sm:text-5xl lg:text-6xl">
-                Czy magazyn energii ma sens w Twoim domu?
-              </h1>
-              <p className="mt-6 max-w-xl text-base leading-7 text-white/68 sm:text-lg">
-                Odpowiedz na kilka prostych pytań. Najpierw powiemy wprost, czy <strong className="text-white">rekomendujemy magazyn energii dla Twojego domu — TAK lub NIE</strong>. Po formularzu otrzymasz pełny raport i kontakt specjalisty.
-              </p>
-              <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <a
-                  href="#analiza"
-                  onClick={(event) => { event.preventDefault(); startAnalysis(); }}
-                  className="inline-flex items-center justify-center rounded-full bg-[#c7f36b] px-6 py-4 text-sm font-black text-[#10261f] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-[#b9ed54]"
-                >
-                  Sprawdź rekomendację <span className="ml-2 text-lg">→</span>
-                </a>
-                <span className="text-xs font-semibold text-white/48">Bez zobowiązań i bez kosztów</span>
-              </div>
-              <div className="mt-8 grid grid-cols-3 gap-3 border-t border-white/10 pt-6">
-                {[['01', 'Rachunek'], ['02', 'Instalacja'], ['03', 'Jasna rekomendacja']].map(([number, label]) => (
-                  <div key={number}><p className="text-xs font-black text-[#c7f36b]">{number}</p><p className="mt-1 text-xs font-bold text-white/60 sm:text-sm">{label}</p></div>
-                ))}
-              </div>
+          <div
+            className={`pointer-events-none absolute inset-0 bg-cover bg-center transition-opacity duration-300 ${
+              isDarkMode ? "opacity-[0.52]" : "opacity-[0.48]"
+            }`}
+            style={{
+              backgroundImage: "url('/images/ess1.png')",
+              filter: "blur(1px)",
+              transform: "scale(1.01)",
+            }}
+          />
+          <div
+            className={`pointer-events-none absolute inset-0 ${
+              isDarkMode
+                ? "bg-gradient-to-r from-slate-950 via-slate-950/72 to-slate-950/28"
+                : "bg-gradient-to-r from-white via-white/72 to-white/22"
+            }`}
+          />
+          <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-cyan-400/25 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-32 left-10 h-72 w-72 rounded-full bg-lime-300/20 blur-3xl" />
+          <div className="relative max-w-3xl">
+            <p
+              className={`mb-4 inline-flex rounded-full px-4 py-2 text-sm font-semibold backdrop-blur ${
+                isDarkMode
+                  ? "border border-white/15 bg-white/10 text-cyan-200"
+                  : "bg-white/70 text-[#1F9ABF]"
+              }`}
+            >
+              Niezależna analiza opłacalności magazynu energii
+            </p>
+            <h1 className="text-3xl font-bold tracking-tight sm:text-5xl">
+              Czy magazyn energii naprawdę się opłaca?
+            </h1>
+            <p className={`mt-5 text-lg leading-8 ${isDarkMode ? "text-[#EDE6E0]" : "text-slate-600"}`}>
+              Dla jednych domów magazyn energii może znacząco obniżyć rachunki za prąd i zwiększyć niezależność energetyczną. W innych przypadkach większy efekt może dać rozbudowa instalacji fotowoltaicznej albo zmiana sposobu wykorzystania energii.
+              <br />
+              <br />
+              Odpowiedz na kilka prostych pytań, a kalkulator oszacuje potencjalne korzyści, sugerowaną pojemność magazynu energii oraz możliwy okres zwrotu inwestycji.
+            </p>
+            <div className={`mt-5 rounded-2xl border p-4 text-sm leading-6 ${
+              isDarkMode
+                ? "border-cyan-300/20 bg-cyan-300/10 text-cyan-50"
+                : "border-white/20 bg-white/15 text-slate-700 backdrop-blur-xl"
+            }`}>
+              <strong>Wynik może być zupełnie inny, niż zakładasz.</strong>
+              <br />
+              W ciągu kilkudziesięciu sekund sprawdzisz, czy magazyn energii ma szansę być opłacalny w Twoim domu oraz jaki wariant może mieć największy sens.
             </div>
-            <div className="relative min-h-[320px] overflow-hidden sm:min-h-[440px] lg:min-h-[610px]">
-              <Image src="/blog/home-storage-evening.png" alt="Dom z fotowoltaiką i magazynem energii" fill priority sizes="(min-width: 1024px) 56vw, 100vw" className="object-cover" />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#10261f]/55 via-transparent to-transparent lg:bg-gradient-to-r lg:from-[#10261f]/35 lg:to-transparent" />
-              <div className="absolute bottom-5 left-5 right-5 grid grid-cols-2 gap-3 sm:bottom-7 sm:left-7 sm:right-7">
-                <div className="rounded-2xl border border-white/18 bg-[#10261f]/72 p-4 text-white backdrop-blur-md">
-                  <p className="text-[10px] font-black uppercase tracking-[0.15em] text-[#9ee5d9]">Jasna odpowiedź</p><p className="mt-1 text-lg font-black">Czy magazyn ma sens?</p>
-                </div>
-                <div className="rounded-2xl border border-white/18 bg-[#f4f5ef]/90 p-4 text-[#10261f] backdrop-blur-md">
-                  <p className="text-[10px] font-black uppercase tracking-[0.15em] text-[#397f72]">Pełna analiza</p><p className="mt-1 text-lg font-black">Szczegóły i rozmowa z ekspertem</p>
-                </div>
-              </div>
-            </div>
+            <a
+              href="#analiza"
+              onClick={(event) => {
+                event.preventDefault();
+                startAnalysis();
+              }}
+              className="mt-6 inline-flex rounded-2xl bg-gradient-to-r from-cyan-300 to-lime-300 px-6 py-4 font-bold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:-translate-y-0.5 hover:brightness-105"
+            >
+              Rozpocznij analizę
+            </a>
           </div>
         </section>
 
         {hasStarted && (
         <section className="grid gap-6">
           <div id="analiza" ref={formRef} className={panelClass}>
-            {!isAnalyzing && !showResult && (
-              <div className={`mb-8 border-b pb-6 ${isDarkMode ? "border-white/10" : "border-[#13231d]/10"}`}>
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className={`text-xs font-black uppercase tracking-[0.18em] ${eyebrowTextClass}`}>Analiza Twojego domu</p>
-                    <p className={`mt-2 text-sm ${mutedTextClass}`}>Odpowiadaj zgodnie z rachunkiem — resztę policzymy za Ciebie.</p>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-3 py-2 text-xs font-black ${isDarkMode ? "bg-white/10 text-white/70" : "bg-[#dff3d5] text-[#397f72]"}`}>
-                    Krok {currentFormStep} z {totalFormSteps}
-                  </span>
-                </div>
-                <div className={`mt-5 h-1.5 overflow-hidden rounded-full ${isDarkMode ? "bg-white/10" : "bg-[#13231d]/8"}`}>
-                  <div
-                    className="h-full rounded-full bg-[#c7f36b] transition-all duration-500"
-                    style={{ width: `${Math.min(100, (currentFormStep / totalFormSteps) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            )}
             {isAnalyzing ? (
               <div
                 className={`flex min-h-[520px] flex-col justify-center rounded-[28px] p-6 sm:p-8 ${
@@ -1530,13 +1298,13 @@ const canSubmitLead = Boolean(
                   </p>
                   <h3 className="mt-3 text-2xl font-bold">
                     {result.recommendation.type === "recommended"
-                      ? "TAK — rekomendujemy magazyn energii dla Twojego domu"
-                      : "NIE — przy podanych danych nie rekomendujemy magazynu energii"}
+                      ? "TAK — rekomendujemy przejście do pełnej analizy"
+                      : "NIE — na podstawie obecnych danych nie rekomendujemy zakupu"}
                   </h3>
                   <p className={`mt-3 text-sm leading-6 ${mutedTextClass}`}>
                     {isFullReportUnlocked
                       ? result.recommendation.description
-                      : "Ta decyzja dotyczy bezpośrednio zakupu magazynu energii. Pełny dobór pojemności, widełki oszczędności i ceny, okres zwrotu oraz kontakt specjalisty odblokujemy po przesłaniu formularza."}
+                      : "Pełny dobór pojemności, realne widełki oszczędności i ceny oraz okres zwrotu pokażemy po przesłaniu danych kontaktowych."}
                   </p>
                   {isFullReportUnlocked && result.recommendation.type === "not_recommended" && (
                     <div className={`mt-4 rounded-[18px] border p-4 text-sm leading-6 ${isDarkMode ? "border-white/10 bg-white/5 text-[#D8CEC7]" : "border-slate-200 bg-white/70 text-slate-600"}`}>
@@ -1562,7 +1330,7 @@ const canSubmitLead = Boolean(
         return next;
       });
     }}
-    className="w-full rounded-2xl bg-[#c7f36b] px-5 py-4 text-left text-[#10261f] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-[#b9ed54]"
+    className="w-full rounded-2xl bg-gradient-to-r from-cyan-300 to-lime-300 px-5 py-4 text-left text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:-translate-y-0.5 hover:brightness-105"
   >
     <span className="flex items-center justify-between gap-4">
       <span
@@ -1830,11 +1598,8 @@ const canSubmitLead = Boolean(
                   <div className={resultCardClass}>
                     <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Potencjalna dotacja — nabór planowany</p>
                     <p className={isDarkMode ? "mt-1 text-2xl font-bold text-violet-300" : "mt-1 text-2xl font-bold text-violet-700"}>do {formatMoney(result.subsidyEstimate)}</p>
-                    <p className={`mt-1 text-xs font-semibold ${mutedTextClass}`}>
-                      {formatMoney(result.subsidyStorage)} dotacji do magazynu oraz {formatMoney(result.subsidyEuBonus)} bonusu za urządzenie / EMS z UE
-                    </p>
                     <p className={`mt-2 text-xs leading-5 ${mutedTextClass}`}>
-                      Pokazujemy maksymalną możliwą kwotę: do 800 zł za każdą kWh pojemności magazynu, maksymalnie {formatMoney(result.subsidyStorageLimit)} dla tej konfiguracji, oraz do 2 000 zł bonusu za urządzenie lub EMS produkowane w UE. Łączny limit programu wynosi do 18 000 zł. Ostateczna dotacja zależy między innymi od kosztów kwalifikowanych i wymaga potwierdzenia warunków planowanego naboru PME 2.
+                      Kwota uwzględnia limity planowanego programu PME 2: do 30% kosztów kwalifikowanych, limit 800 zł/kWh i odpowiedni limit dla systemu rozliczeń. Nie jest gwarantowana i wymaga potwierdzenia warunków naboru.
                     </p>
                   </div>
                   <div className={resultCardClass}>
@@ -1854,7 +1619,7 @@ const canSubmitLead = Boolean(
                     {expandedResultDetails.payback && (
                       <div className={`mt-3 px-4 py-3 ${isDarkMode ? "bg-white/5" : "bg-slate-100/80"}`}>
                         <p className={`text-xs leading-5 ${mutedTextClass}`}>
-                          Przyjęliśmy wzrost wartości oszczędności o <strong className={isDarkMode ? "text-white" : "text-slate-900"}>9% rocznie</strong>. Bez dotacji okres zwrotu wynosi około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{result.paybackYearsWithoutSubsidyLow}–{result.paybackYearsWithoutSubsidyHigh} lat</strong>. Kalkulacja nie uwzględnia degradacji, kosztu finansowania ani ewentualnej wymiany baterii, dlatego wynik pozostaje orientacyjny.
+                          Przyjęliśmy ostrożny wzrost wartości oszczędności o <strong className={isDarkMode ? "text-white" : "text-slate-900"}>2,5% rocznie</strong>. Bez dotacji okres zwrotu wynosi około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{result.paybackYearsWithoutSubsidyLow}–{result.paybackYearsWithoutSubsidyHigh} lat</strong>. Kalkulacja nie uwzględnia degradacji, kosztu finansowania ani ewentualnej wymiany baterii, dlatego wynik pozostaje orientacyjny.
                         </p>
                       </div>
                     )}
@@ -1864,9 +1629,9 @@ const canSubmitLead = Boolean(
                 </div>
                 ) : (
                   <div className={`rounded-[24px] border p-5 ${isDarkMode ? "border-cyan-300/20 bg-cyan-300/10" : "border-cyan-200 bg-cyan-50"}`}>
-                    <p className="font-bold">Poznaj szczegóły wyniku i porozmawiaj ze specjalistą</p>
+                    <p className="font-bold">Pełny raport jest gotowy</p>
                     <p className={`mt-2 text-sm leading-6 ${mutedTextClass}`}>
-                      Zostaw dane kontaktowe poniżej, aby odblokować pojemność magazynu, widełki cenowe, oszczędności, wariant dotacji i okres zwrotu. Specjalista IdeaSol skontaktuje się z Tobą, aby omówić wynik.
+                      Zostaw dane kontaktowe poniżej, aby odblokować pojemność magazynu, widełki cenowe, oszczędności, wariant dotacji i okres zwrotu.
                     </p>
                   </div>
                 )}
@@ -1890,11 +1655,11 @@ const canSubmitLead = Boolean(
 
                 <div className={contactPanelClass}>
                   <p className={`text-xs font-bold uppercase tracking-[0.2em] ${isDarkMode ? "text-lime-300" : "text-lime-700"}`}>
-                    Szczegółowa analiza Twojego wyniku
+                    Pełna rekomendacja
                   </p>
-                  <p className="mt-3 text-xl font-bold">Odbierz pełną analizę</p>
+                  <p className="mt-3 text-xl font-bold">Odblokuj kompletny raport</p>
                   <p className={`mt-2 text-sm ${mutedTextClass}`}>
-                    Po przesłaniu formularza pokażemy dobraną pojemność, oszczędności, ceny, potencjalną dotację i okres zwrotu. Specjalista IdeaSol skontaktuje się z Tobą, aby zweryfikować wynik i odpowiedzieć na pytania.
+                    Po przesłaniu formularza pokażemy dobraną pojemność, oszczędności, ceny, potencjalną dotację i okres zwrotu. Doradca zweryfikuje wynik na podstawie pełnych danych.
                   </p>
 
                   <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -1981,7 +1746,7 @@ const canSubmitLead = Boolean(
                         className="mt-1 h-4 w-4 shrink-0"
                       />
                       <span className={`text-xs leading-5 ${mutedTextClass}`}>
-                        Wyrażam zgodę na przetwarzanie podanych danych kontaktowych w celu kontaktu ze strony doradcy IdeaSol Sp. z o.o. z siedzibą w Kielcach, w związku z analizą zapotrzebowania na magazyn energii oraz przedstawieniem informacji handlowych dotyczących oferowanych rozwiązań energetycznych.
+                        Wyrażam zgodę na przetwarzanie podanych danych kontaktowych w celu kontaktu ze strony doradcy IdeaSol, marki handlowej firmy Marketing i Promocja Sp. z o.o. z siedzibą w Kielcach, w związku z analizą zapotrzebowania na magazyn energii oraz przedstawieniem informacji handlowych dotyczących oferowanych rozwiązań energetycznych.
                       </span>
                     </label>
                   </div>
@@ -2006,7 +1771,7 @@ const canSubmitLead = Boolean(
                     disabled={!canSubmitLead || isSubmittingLead}
                     className={contactSubmitButtonClass}
                   >
-                    {isSubmittingLead ? "Wysyłamy zgłoszenie..." : "Odbierz raport i kontakt specjalisty"}
+                    {isSubmittingLead ? "Wysyłamy zgłoszenie..." : "Odbierz pełną rekomendację"}
                   </button>
 
                   {leadSubmitStatus === "success" && (
@@ -2107,18 +1872,6 @@ const canSubmitLead = Boolean(
                     <button
                       type="button"
                       onClick={() => {
-                        const settlementLabel = settlementSystem === "net_billing"
-                          ? "net-billing (nowe zasady)"
-                          : settlementSystem === "net_metering"
-                            ? "net-metering (stare zasady)"
-                            : "Nie wiem";
-                        trackCalculatorEvent("step_view", {
-                          stepNumber: 2,
-                          stepKey: "odpowiedz_szczegoly_instalacji",
-                          question: "Podaj szczegóły obecnej instalacji",
-                          answer: `Moc instalacji: ${parseDecimal(pvPower).toLocaleString("pl-PL")} kWp; system rozliczeń: ${settlementLabel}`,
-                          hasPv: "yes",
-                        });
                         goToStep(4);
                         scrollToElement(formRef.current);
                       }}
@@ -2154,13 +1907,6 @@ const canSubmitLead = Boolean(
                     <button
                       type="button"
                       onClick={() => {
-                        trackCalculatorEvent("step_view", {
-                          stepNumber: hasPv === "yes" ? 3 : 2,
-                          stepKey: "odpowiedz_rachunek_za_energie",
-                          question: "Jaki masz rachunek za energię?",
-                          answer: `${billValue.toLocaleString("pl-PL")} zł ${billMode === "monthly" ? "miesięcznie" : "rocznie"} (wartość roczna: ${yearlyBill.toLocaleString("pl-PL")} zł)`,
-                          hasPv: hasPv || undefined,
-                        });
                         goToStep(5);
                         scrollToElement(formRef.current);
                       }}
@@ -2205,20 +1951,6 @@ const canSubmitLead = Boolean(
                       type="button"
                       disabled={!tariff}
                       onClick={() => {
-                        if (!tariff) return;
-                        const tariffLabel = {
-                          G11: "G11 — stała cena energii",
-                          G12: "G12 — dwie strefy",
-                          G13: "G13 — trzy strefy",
-                          other_unknown: "Inna / nie wiem",
-                        }[tariff];
-                        trackCalculatorEvent("step_view", {
-                          stepNumber: hasPv === "yes" ? 4 : 3,
-                          stepKey: "odpowiedz_taryfa",
-                          question: "Z jakiej taryfy korzystasz?",
-                          answer: tariffLabel,
-                          hasPv: hasPv || undefined,
-                        });
                         goToStep(6);
                         scrollToElement(formRef.current);
                       }}
@@ -2261,7 +1993,7 @@ const canSubmitLead = Boolean(
                       type="button"
                       onClick={handleCalculate}
                       disabled={!canCalculate}
-                      className="mt-3 w-full rounded-2xl bg-[#c7f36b] px-6 py-4 text-lg font-black text-[#10261f] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-[#b9ed54] disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none disabled:hover:translate-y-0"
+                      className="mt-3 w-full rounded-2xl bg-gradient-to-r from-cyan-300 to-lime-300 px-6 py-4 text-lg font-bold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:-translate-y-0.5 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none disabled:hover:translate-y-0"
                     >
                       Dokonaj analizy
                     </button>
@@ -2293,39 +2025,73 @@ const canSubmitLead = Boolean(
           }
         }
       `}</style>
-      <section className={`mx-auto mt-12 w-full max-w-7xl rounded-[32px] border p-6 sm:p-9 ${isDarkMode ? "border-white/10 bg-white/5" : "border-[#13231d]/10 bg-white/60"}`}>
-        <div className="flex flex-wrap items-end justify-between gap-5 border-b pb-6 border-current/10">
-          <div>
-            <p className={`text-xs font-black uppercase tracking-[0.2em] ${eyebrowTextClass}`}>Baza wiedzy</p>
-            <h2 className="mt-2 text-3xl font-black tracking-[-0.04em] sm:text-4xl">Podejmij decyzję świadomie</h2>
-            <p className={`mt-3 max-w-2xl text-sm leading-6 ${mutedTextClass}`}>Praktyczne poradniki o opłacalności, doborze urządzeń i zasadach rozliczeń.</p>
-          </div>
-          <Link href="/blog" className={`rounded-full px-5 py-3 text-sm font-black transition hover:-translate-y-0.5 ${isDarkMode ? "bg-[#c7f36b] text-[#10261f]" : "bg-[#10261f] text-white"}`}>
-            Wszystkie artykuły →
-          </Link>
-        </div>
-
-        <div className="mt-7 grid gap-5 md:grid-cols-3">
-          {[
-            { href: "/blog/czy-magazyn-energii-sie-oplaca-w-2026-roku", image: "/blog/home-storage-evening.png", title: "Czy magazyn energii się opłaca?", text: "Realne okresy zwrotu, koszty i scenariusze na 2026 rok." },
-            { href: "/blog/jak-dobrac-magazyn-energii-do-fotowoltaiki", image: "/blog/storage-sizing-workspace.png", title: "Jak dobrać pojemność magazynu?", text: "Dlaczego większa bateria nie zawsze oznacza większe oszczędności." },
-            { href: "/blog/net-billing-a-magazyn-energii-kompletny-poradnik", image: "/blog/dynamic-energy-pricing.png", title: "Net-billing bez tajemnic", text: "Ceny godzinowe, autokonsumpcja i rola magazynu energii." },
-          ].map((article) => (
-            <Link key={article.href} href={article.href} className="group">
-              <div className="relative aspect-[16/9] overflow-hidden rounded-2xl bg-[#dce4dc]">
-                <Image src={article.image} alt="" fill sizes="(min-width: 768px) 33vw, 100vw" className="object-cover transition duration-500 group-hover:scale-[1.035]" />
-              </div>
-              <h3 className="mt-4 text-lg font-black leading-tight transition group-hover:text-[#397f72]">{article.title}</h3>
-              <p className={`mt-2 text-sm leading-6 ${mutedTextClass}`}>{article.text}</p>
-            </Link>
-          ))}
-        </div>
-      </section>
-      <p className={`mx-auto mt-6 max-w-5xl px-4 text-center text-xs leading-5 ${mutedTextClass}`}>
-        W celu zapewnienia bezpieczeństwa i analizy działania kalkulatora zapisujemy techniczne dane
-        wizyty, w tym adres IP, przybliżoną lokalizację, źródło wejścia oraz osiągnięte etapy. Dane
-        formularza kontaktowego są przetwarzane oddzielnie zgodnie z zasadami IdeaSol.
+      <section className={panelClass}>
+  <div className="flex items-center justify-between gap-4 flex-wrap">
+    <div>
+      <p className={`text-sm font-semibold uppercase tracking-[0.2em] ${eyebrowTextClass}`}>
+        Baza wiedzy
       </p>
+      <h2 className="mt-2 text-3xl font-bold">
+        Sprawdź najnowsze artykuły
+      </h2>
+      <p className={`mt-3 max-w-2xl text-sm ${mutedTextClass}`}>
+        Rzetelne poradniki o magazynach energii, fotowoltaice, net-billingu,
+        taryfach energetycznych i opłacalności inwestycji.
+      </p>
+    </div>
+
+    <Link
+      href="/blog"
+      className="rounded-2xl bg-gradient-to-r from-cyan-300 to-lime-300 px-5 py-3 font-bold text-slate-950 shadow-lg transition hover:-translate-y-0.5"
+    >
+      Zobacz wszystkie artykuły
+    </Link>
+  </div>
+
+  <div className="mt-8 grid gap-4 md:grid-cols-3">
+    <Link
+      href="/blog/czy-magazyn-energii-sie-oplaca"
+      className={`rounded-3xl border p-5 transition hover:-translate-y-1 ${
+        isDarkMode ? "border-white/10 bg-white/5" : "border-slate-200 bg-white"
+      }`}
+    >
+      <h3 className="font-bold">
+        Czy magazyn energii się opłaca w 2026 roku?
+      </h3>
+      <p className={`mt-3 text-sm ${mutedTextClass}`}>
+        Analiza opłacalności, dotacji i realnych okresów zwrotu.
+      </p>
+    </Link>
+
+    <Link
+      href="/blog/fotowoltaika-z-magazynem-energii-kiedy-ma-sens"
+      className={`rounded-3xl border p-5 transition hover:-translate-y-1 ${
+        isDarkMode ? "border-white/10 bg-white/5" : "border-slate-200 bg-white"
+      }`}
+    >
+      <h3 className="font-bold">
+        Fotowoltaika z magazynem energii — kiedy ma sens?
+      </h3>
+      <p className={`mt-3 text-sm ${mutedTextClass}`}>
+        Konkretne scenariusze, w których magazyn realnie poprawia ekonomię instalacji.
+      </p>
+    </Link>
+
+    <Link
+      href="/blog/net-billing-a-magazyn-energii"
+      className={`rounded-3xl border p-5 transition hover:-translate-y-1 ${
+        isDarkMode ? "border-white/10 bg-white/5" : "border-slate-200 bg-white"
+      }`}
+    >
+      <h3 className="font-bold">
+        Net-billing a magazyn energii
+      </h3>
+      <p className={`mt-3 text-sm ${mutedTextClass}`}>
+        Jak działają ceny godzinowe i dlaczego autokonsumpcja jest dziś tak ważna.
+      </p>
+    </Link>
+  </div>
+</section>
     </main>
   );
 }

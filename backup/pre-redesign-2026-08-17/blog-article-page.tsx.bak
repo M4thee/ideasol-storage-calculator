@@ -1,0 +1,388 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { blogArticles, getBlogArticleBySlug } from "@/lib/blog/index";
+
+type BlogArticlePageProps = {
+  params: Promise<{
+    slug: string;
+  }>;
+};
+
+function formatDate(date: string) {
+  return new Intl.DateTimeFormat("pl-PL", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).format(new Date(date));
+}
+
+export function generateStaticParams() {
+  return blogArticles.map((article) => ({
+    slug: article.slug,
+  }));
+}
+
+export async function generateMetadata({ params }: BlogArticlePageProps) {
+  const { slug } = await params;
+  const article = getBlogArticleBySlug(slug);
+
+  if (!article) {
+    return {
+      title: "Artykuł nie znaleziony | IdeaSol",
+    };
+  }
+
+  return {
+    title: `${article.title} | IdeaSol`,
+    description: article.description,
+    keywords: article.keywords,
+    alternates: {
+      canonical: `https://magazyny.ideasol.pl/blog/${article.slug}`,
+    },
+    openGraph: {
+      title: `${article.title} | IdeaSol`,
+      description: article.description,
+      url: `https://magazyny.ideasol.pl/blog/${article.slug}`,
+      siteName: "IdeaSol",
+      locale: "pl_PL",
+      type: "article",
+      publishedTime: article.publishedAt,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: article.title,
+      description: article.description,
+    },
+  };
+}
+
+// BLOG RENDERER
+// This page is intentionally generic and should only render article data.
+// Article content should live in separate files under lib/blog/articles.
+// Future work: move all article definitions out of lib/blog.ts into individual files
+// and keep this renderer unchanged.
+export default async function BlogArticlePage({ params }: BlogArticlePageProps) {
+  const { slug } = await params;
+  const article = getBlogArticleBySlug(slug);
+
+  if (!article) {
+    notFound();
+  }
+
+  const articleSchema = {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: article.title,
+    description: article.description,
+    datePublished: article.publishedAt,
+    author: {
+      "@type": "Organization",
+      name: "IdeaSol",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "IdeaSol",
+    },
+    mainEntityOfPage: `https://magazyny.ideasol.pl/blog/${article.slug}`,
+  };
+
+  const breadcrumbSchema = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Strona główna",
+        item: "https://magazyny.ideasol.pl",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Blog",
+        item: "https://magazyny.ideasol.pl/blog",
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: article.title,
+        item: `https://magazyny.ideasol.pl/blog/${article.slug}`,
+      },
+    ],
+  };
+
+  const faqSchema = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: (article.faq ?? []).map((item) => ({
+      "@type": "Question",
+      name: item.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: item.answer,
+      },
+    })),
+  };
+
+  return (
+    <main className="min-h-screen bg-[#07111f] text-white">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(articleSchema),
+        }}
+      />
+
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(breadcrumbSchema),
+        }}
+      />
+
+      {(article.faq?.length ?? 0) > 0 && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(faqSchema),
+          }}
+        />
+      )}
+      <section className="relative overflow-hidden border-b border-white/10 px-4 py-10 sm:px-6 lg:px-8">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.18),transparent_34%),radial-gradient(circle_at_top_right,rgba(190,255,103,0.12),transparent_30%)]" />
+
+        <article className="relative mx-auto max-w-5xl">
+          <nav className="mb-6 text-sm text-slate-400">
+            <Link href="/" className="hover:text-cyan-200">
+              Strona główna
+            </Link>
+            <span className="mx-2">/</span>
+            <Link href="/blog" className="hover:text-cyan-200">
+              Blog
+            </Link>
+            <span className="mx-2">/</span>
+            <span className="text-slate-300">{article.title}</span>
+          </nav>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              href="/blog"
+              className="inline-flex rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-white/10"
+            >
+              ← Wróć do bazy wiedzy
+            </Link>
+            <Link
+              href="/#calculator"
+              className="inline-flex rounded-full border border-lime-300/20 bg-lime-300/10 px-4 py-2 text-sm font-semibold text-lime-100 transition hover:bg-lime-300/15"
+            >
+              Przejdź do kalkulatora
+            </Link>
+          </div>
+
+          <header className="mt-10 grid gap-8 lg:grid-cols-[1fr_300px] lg:items-end">
+            <div>
+              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-400">
+                <span className="rounded-full bg-cyan-300/10 px-3 py-1 font-bold text-cyan-200">
+                  {article.category}
+                </span>
+                <span>{formatDate(article.publishedAt)}</span>
+                <span>•</span>
+                <span>{article.readingTime}</span>
+              </div>
+
+              <h1 className="mt-5 text-4xl font-black leading-tight tracking-tight sm:text-5xl lg:text-6xl">
+                {article.title}
+              </h1>
+              <p className="mt-6 max-w-3xl text-lg leading-8 text-slate-300">
+                {article.intro}
+              </p>
+            </div>
+
+            <aside className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl shadow-cyan-950/30">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-lime-200">
+                Szybka analiza
+              </p>
+              <p className="mt-3 text-sm leading-7 text-slate-300">
+                Artykuł daje kontekst. Kalkulator pokazuje liczby dla konkretnego domu,
+                rachunków i taryfy.
+              </p>
+              <Link
+                href="/#calculator"
+                className="mt-5 inline-flex w-full justify-center rounded-2xl bg-lime-300 px-5 py-3 text-sm font-black text-slate-950 transition hover:bg-lime-200"
+              >
+                Przelicz swój dom
+              </Link>
+            </aside>
+          </header>
+        </article>
+      </section>
+
+      <article className="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[220px_1fr] lg:px-8">
+        <aside className="hidden lg:block">
+          <div className="sticky top-8 rounded-3xl border border-white/10 bg-white/[0.04] p-5">
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-200">
+              W artykule
+            </p>
+            <nav className="mt-4 space-y-3 text-sm text-slate-300">
+              {article.sections.map((section, index) => (
+                <a
+                  key={section.heading}
+                  href={`#sekcja-${index + 1}`}
+                  className="block leading-6 transition hover:text-lime-200"
+                >
+                  {index + 1}. {section.heading}
+                </a>
+              ))}
+            </nav>
+          </div>
+        </aside>
+
+        <div className="min-w-0">
+          <div className="space-y-12">
+            {article.sections.map((section, sectionIndex) => (
+              <section
+                id={`sekcja-${sectionIndex + 1}`}
+                key={section.heading}
+                className="scroll-mt-8 rounded-3xl border border-white/10 bg-white/[0.025] p-6 sm:p-8"
+              >
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-300/80">
+                  Sekcja {sectionIndex + 1}
+                </p>
+                <h2 className="mt-3 text-2xl font-black tracking-tight text-white sm:text-3xl">
+                  {section.heading}
+                </h2>
+                <div className="mt-5 space-y-5 text-base leading-8 text-slate-300 sm:text-lg sm:leading-9">
+                  {section.body.map((block, index) => {
+                    const typedBlock = block as
+                      | { type: "paragraph"; content: string }
+                      | { type: "list"; items: string[] }
+                      | { type: "note"; content: string }
+                      | { type: "table"; headers: string[]; rows: string[][] };
+
+                    if (typedBlock.type === "paragraph") {
+                      return (
+                        <p key={`${section.heading}-paragraph-${index}`}>
+                          {typedBlock.content}
+                        </p>
+                      );
+                    }
+
+                    if (typedBlock.type === "list") {
+                      return (
+                        <ul
+                          key={`${section.heading}-list-${index}`}
+                          className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.035] p-5 pl-8"
+                        >
+                          {typedBlock.items.map((item) => (
+                            <li key={item} className="list-disc marker:text-lime-300">
+                              {item}
+                            </li>
+                          ))}
+                        </ul>
+                      );
+                    }
+
+                    if (typedBlock.type === "note") {
+                      return (
+                        <div
+                          key={`${section.heading}-note-${index}`}
+                          className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-5 text-cyan-50"
+                        >
+                          {typedBlock.content}
+                        </div>
+                      );
+                    }
+
+                    if (typedBlock.type === "table") {
+                      return (
+                        <div
+                          key={`${section.heading}-table-${index}`}
+                          className="overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.035]"
+                        >
+                          <table className="min-w-full text-left text-sm text-slate-300">
+                            <thead className="bg-white/5">
+                              <tr>
+                                {typedBlock.headers.map((header: string) => (
+                                  <th
+                                    key={header}
+                                    className="px-4 py-3 font-black text-cyan-100"
+                                  >
+                                    {header}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {typedBlock.rows.map((row: string[], rowIndex: number) => (
+                                <tr
+                                  key={rowIndex}
+                                  className="border-t border-white/10"
+                                >
+                                  {row.map((cell: string, cellIndex: number) => (
+                                    <td
+                                      key={cellIndex}
+                                      className="px-4 py-3 align-top"
+                                    >
+                                      {cell}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+
+          {article.faq && article.faq.length > 0 && (
+            <section className="mt-12 rounded-3xl border border-white/10 bg-white/[0.04] p-6 sm:p-8">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-lime-200">
+                FAQ
+              </p>
+              <h2 className="mt-3 text-3xl font-black tracking-tight text-white">
+                Najczęstsze pytania
+              </h2>
+              <div className="mt-7 space-y-5">
+                {article.faq.map((item) => (
+                  <div
+                    key={item.question}
+                    className="rounded-2xl border border-white/10 bg-white/[0.035] p-5"
+                  >
+                    <h3 className="font-black text-cyan-100">{item.question}</h3>
+                    <p className="mt-2 leading-7 text-slate-300">{item.answer}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className="mt-12 overflow-hidden rounded-3xl border border-lime-300/20 bg-gradient-to-br from-lime-300/15 via-cyan-300/10 to-white/[0.04] p-6 sm:p-8">
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-lime-200">
+              Bez zgadywania
+            </p>
+            <h2 className="mt-3 text-3xl font-black tracking-tight text-white">
+              Sprawdź swoją sytuację w kalkulatorze
+            </h2>
+            <p className="mt-4 max-w-2xl text-base leading-8 text-slate-200">
+              Artykuł wyjaśnia zasady, ale realna opłacalność zależy od Twoich rachunków,
+              taryfy, zużycia energii i parametrów instalacji. Wykonaj krótką analizę i zobacz
+              wynik dla swojego domu.
+            </p>
+            <Link
+              href="/#calculator"
+              className="mt-7 inline-flex rounded-2xl bg-gradient-to-r from-cyan-300 to-lime-300 px-6 py-4 text-sm font-black text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:-translate-y-0.5"
+            >
+              Uruchom kalkulator
+            </Link>
+          </section>
+        </div>
+      </article>
+    </main>
+  );
+}

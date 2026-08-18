@@ -45,6 +45,10 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json();
     const crmEndpoint = process.env.CRM_LEAD_ENDPOINT || DEFAULT_CRM_LEAD_ENDPOINT;
+    const forwardedFor =
+      request.headers.get("cf-connecting-ip") ||
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+    const userAgent = request.headers.get("user-agent")?.slice(0, 1000);
 
     const crmResponse = await fetch(crmEndpoint, {
       method: "POST",
@@ -52,14 +56,25 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
         "X-Forwarded-Host": request.headers.get("host") || "magazyny.ideasol.pl",
         "X-Forwarded-Proto": "https",
+        ...(forwardedFor ? { "X-Forwarded-For": forwardedFor } : {}),
+        ...(forwardedFor ? { "X-Client-IP": forwardedFor } : {}),
+        ...(userAgent ? { "X-Client-User-Agent": userAgent } : {}),
       },
       body: JSON.stringify(payload),
+      cache: "no-store",
     });
 
     const contentType = crmResponse.headers.get("content-type") || "";
     const data = contentType.includes("application/json")
-      ? await crmResponse.json().catch(() => ({}))
+      ? await crmResponse.json().catch(() => ({})) as Record<string, unknown>
       : { error: await crmResponse.text().catch(() => "Nie udało się wysłać zgłoszenia.") };
+
+    if (crmResponse.ok && data.ok === true && typeof data.clientId !== "string") {
+      return NextResponse.json(
+        { error: "CRM nie potwierdził zapisu leada." },
+        { status: 502, headers: corsHeaders }
+      );
+    }
 
     return NextResponse.json(data, {
       status: crmResponse.status,
