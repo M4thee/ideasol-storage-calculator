@@ -4,6 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import Script from "next/script";
+import {
+  calculateTariffOptimization,
+  estimateGridConsumptionFromBill,
+  getBackupStorageFromConsumption,
+  getBestAlternativeTariffOptimization,
+  getStorageAlternatives,
+  getTariffProfile,
+  getTariffStorageFromConsumption,
+  pickStorageVariant,
+  type Tariff,
+} from "@/lib/energyStorageTariff";
 import { normalizePolishMobilePhone } from "@/lib/polishMobilePhone";
 
 declare global {
@@ -24,14 +35,13 @@ declare global {
 }
 
 type HasPv = "yes" | "no" | null;
-type Tariff = "G11" | "G12" | "G13" | "other_unknown" | null;
 type BillMode = "monthly" | "yearly";
 
 type SettlementSystem = "net_billing" | "net_metering" | "unknown" | null;
 
 type ThemeMode = "auto" | "light" | "dark";
 
-type RecommendationType = "recommended" | "not_recommended";
+type RecommendationType = "recommended" | "consider" | "not_recommended";
 
 type CalculatorAnalyticsEvent =
   | "calculator_view"
@@ -110,7 +120,6 @@ function sendCalculatorAnalyticsEvent(
   }).catch(() => undefined);
 }
 
-const ENERGY_PRICE_PER_KWH = 0.95;
 const NET_BILLING_EXPORT_PRICE_PER_KWH = 0.34;
 const NET_BILLING_BASE_AUTOCONSUMPTION_RATE = 0.2;
 const NET_METERING_SMALL_INSTALLATION_RETURN_RATE = 0.8;
@@ -148,6 +157,19 @@ function formatMoney(value: number) {
     currency: "PLN",
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function formatMoneyWithDecimals(value: number) {
+  return new Intl.NumberFormat("pl-PL", {
+    style: "currency",
+    currency: "PLN",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatPaybackRange(low: number, high: number) {
+  return low === high ? `około ${low} lat` : `${low}–${high} lat`;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -189,26 +211,12 @@ function createMetaLeadEventId() {
   return `lead:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
 
-function pickStorageVariant(requiredKwh: number) {
-  if (requiredKwh <= 10) return 10;
-  if (requiredKwh <= 16) return 16;
-  if (requiredKwh <= 20) return 20;
-  return 30;
-}
-
 function getStorageFromConsumption(yearlyConsumptionKwh: number) {
   if (yearlyConsumptionKwh <= 7000) return 10;
   if (yearlyConsumptionKwh <= 11000) return 16;
   if (yearlyConsumptionKwh <= 15000) return 20;
   return 30;
 }
-
-function getAvoidedEnergyPricePerKwh(tariff: Tariff) {
-  if (tariff === "G13") return 1.05;
-  if (tariff === "G12") return 1;
-  return ENERGY_PRICE_PER_KWH;
-}
-
 
 function getSuggestedPvKw(yearlyConsumptionKwh: number) {
   if (yearlyConsumptionKwh <= 3500) return 4;
@@ -425,17 +433,40 @@ function getNetMeteringStorageSavingsRange(params: {
 function getRecommendation(params: {
   paybackYearsLow: number;
   paybackYearsHigh: number;
+  alternativePaybackYearsLow: number;
+  alternativePaybackYearsHigh: number;
+  yearlyBill: number;
+  shouldRecommendPvExpansion: boolean;
   priorities: string[];
 }): {
   type: RecommendationType;
   title: string;
   description: string;
 } {
-  const { paybackYearsLow, paybackYearsHigh, priorities } = params;
+  const {
+    paybackYearsLow,
+    paybackYearsHigh,
+    alternativePaybackYearsLow,
+    alternativePaybackYearsHigh,
+    yearlyBill,
+    shouldRecommendPvExpansion,
+    priorities,
+  } = params;
   const paybackYearsForRecommendation = Math.round((paybackYearsLow + paybackYearsHigh) / 2);
-  const caresAboutSavings = priorities.includes("Niższe rachunki");
+  const alternativePaybackYears = Math.round(
+    (alternativePaybackYearsLow + alternativePaybackYearsHigh) / 2
+  );
   const caresAboutBackup = priorities.includes("Awaryjne zasilanie domu w razie awarii");
   const caresAboutEfficiency = priorities.includes("Zwiększenie produktywności mojej instalacji fotowoltaicznej (zapobieganie wyłączeniom)");
+
+  if (shouldRecommendPvExpansion && yearlyBill >= 3600) {
+    return {
+      type: "consider",
+      title: "Wymagana indywidualna analiza",
+      description:
+        "Magazyn może poprawić wynik, ale obecna fotowoltaika pokrywa zbyt małą część zapotrzebowania, aby sprowadzić decyzję do prostego doboru baterii. Najpierw trzeba sprawdzić możliwość rozbudowy PV, profil zużycia w strefach i wymagania dotyczące zasilania awaryjnego.",
+    };
+  }
 
   if (paybackYearsForRecommendation <= 12) {
     return {
@@ -446,53 +477,39 @@ function getRecommendation(params: {
     };
   }
 
-  if ((caresAboutBackup || caresAboutEfficiency) && paybackYearsForRecommendation <= 18) {
-    return {
-      type: "recommended",
-      title: "Rekomendujemy dalszą analizę magazynu energii",
-      description:
-        "Sama oszczędność finansowa nie jest jedyną korzyścią: w tym przypadku istotne są również zasilanie awaryjne lub lepsze wykorzystanie instalacji fotowoltaicznej.",
-    };
-  }
+  const tariffChangeCouldHelp =
+    alternativePaybackYears <= 18 &&
+    alternativePaybackYears + 1 < paybackYearsForRecommendation;
+  const needsComplexOptimization =
+    paybackYearsForRecommendation <= 18 ||
+    tariffChangeCouldHelp ||
+    (shouldRecommendPvExpansion && yearlyBill >= 3600) ||
+    ((caresAboutBackup || caresAboutEfficiency) && yearlyBill >= 4800);
 
-  if (caresAboutBackup) {
+  if (needsComplexOptimization) {
     return {
-      type: "not_recommended",
-      title: "Nie rekomendujemy zakupu bez indywidualnej analizy",
+      type: "consider",
+      title: "Wymagana indywidualna analiza",
       description:
-        "Zasilanie awaryjne może być wartościową funkcją, ale przy podanych parametrach koszt jest zbyt wysoki, aby wydać pozytywną rekomendację bez analizy profilu zużycia.",
-    };
-  }
-
-  if (caresAboutEfficiency) {
-    return {
-      type: "not_recommended",
-      title: "Najpierw rekomendujemy diagnostykę instalacji",
-      description:
-        "Magazyn może ograniczyć część strat, ale nie powinien zastępować diagnostyki napięcia, falownika i przyłącza. Przy tym wyniku najpierw warto ustalić źródło wyłączeń.",
-    };
-  }
-
-  if (caresAboutSavings) {
-    return {
-      type: "not_recommended",
-      title: "Nie rekomendujemy magazynu wyłącznie ze względów finansowych",
-      description:
-        "Przy obecnych założeniach okres zwrotu jest zbyt długi, żeby rekomendować magazyn energii wyłącznie jako inwestycję finansową. Warto porozmawiać z doradcą o innych możliwościach obniżenia kosztów energii.",
+        "Wynik ma potencjał, ale nie sprowadza się do prostego ładowania magazynu z fotowoltaiki. Trzeba potwierdzić profil zużycia w strefach, taryfę, możliwość rozbudowy PV i wymagania dotyczące zasilania awaryjnego.",
     };
   }
 
   return {
     type: "not_recommended",
-    title: "Nie rekomendujemy inwestycji przy tych założeniach",
+    title: "Magazyn energii nie jest opłacalny przy tych założeniach",
     description:
-      "Szacowany okres zwrotu jest zbyt długi. Profil zużycia, taryfa lub warunki programu dotacyjnego mogą zmienić wynik, ale nie należy tego zakładać bez dodatkowych danych.",
+      "Rachunek i możliwe oszczędności są zbyt małe w stosunku do kosztu zakupu. Nawet po uwzględnieniu pracy taryfowej okres zwrotu pozostaje zbyt długi.",
   };
 }
 
 function getRecommendationBoxClass(type: RecommendationType) {
   if (type === "recommended") {
     return "border-emerald-300/30 bg-emerald-300/15";
+  }
+
+  if (type === "consider") {
+    return "border-amber-300/35 bg-amber-300/15";
   }
 
   if (type === "not_recommended") {
@@ -503,8 +520,9 @@ function getRecommendationBoxClass(type: RecommendationType) {
 }
 
 function getRecommendationBadge(type: RecommendationType) {
-  if (type === "recommended") return "✅ REKOMENDUJEMY MAGAZYN ENERGII";
-  return "🛑 NIE REKOMENDUJEMY MAGAZYNU ENERGII";
+  if (type === "recommended") return "🟢 REKOMENDOWANY";
+  if (type === "consider") return "🟡 WYMAGANA INDYWIDUALNA ANALIZA";
+  return "🔴 NIE REKOMENDUJEMY";
 }
 
 export default function EnergyStorageCalculatorPage() {
@@ -516,7 +534,7 @@ export default function EnergyStorageCalculatorPage() {
   const [settlementSystem, setSettlementSystem] = useState<SettlementSystem>(null);
   const [billMode, setBillMode] = useState<BillMode>("monthly");
   const [billAmount, setBillAmount] = useState("");
-  const [tariff, setTariff] = useState<Tariff>(null);
+  const [tariff, setTariff] = useState<Tariff | null>(null);
   const [showResult, setShowResult] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStep, setAnalysisStep] = useState(0);
@@ -728,11 +746,11 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
     : "mt-4 w-full rounded-2xl bg-[#10261f] px-5 py-3 font-bold text-white shadow-lg shadow-[#10261f]/15 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-[#aeb8b2] disabled:shadow-none";
 
   const tariffHint = {
-    G11: "Taryfa G11 nie wykorzystuje w pełni potencjału magazynów energii. Zalecane są taryfy G12/G13 lub taryfy dynamiczne. Nasz doradca pomoże wybrać Ci najlepsze rozwiązanie.",
-    G12: "Taryfa G12 może dobrze współpracować z magazynem energii, szczególnie gdy część zużycia przesuwamy na tańsze godziny i lepiej zarządzamy energią w domu.",
+    G11: "W G11 nie ma tańszej strefy ładowania. Kalkulator nie doliczy więc korzyści taryfowej — magazyn oceniamy na podstawie PV, backupu i pozostałych priorytetów.",
+    G12: "Dla taryfy dwustrefowej pokazujemy bezpieczny przedział korzyści obejmujący G12 i wariant weekendowy G12w. Dokładny wariant doradca potwierdzi później z rachunku.",
     G13: "Taryfa G13 daje więcej możliwości optymalizacji pracy magazynu energii, bo pozwala lepiej dopasować ładowanie i zużycie do różnych stref cenowych.",
-    other_unknown: "Jeżeli nie znasz taryfy albo masz mniej typową umowę, wybierz tę opcję. Doradca może później sprawdzić, czy obecna taryfa jest korzystna dla magazynu energii.",
-  } satisfies Record<Exclude<Tariff, null>, string>;
+    other_unknown: "Bez znajomości stref nie doliczamy korzyści taryfowej. Doradca może ją później policzyć z rachunku zawierającego zużycie w każdej strefie.",
+  } satisfies Record<Tariff, string>;
 
   const settlementSystemHint: Record<Exclude<SettlementSystem, null>, string> = {
     net_metering:
@@ -894,10 +912,11 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
   const billValue = parseDecimal(billAmount);
   const yearlyBill = billMode === "monthly" ? billValue * 12 : billValue;
   const currentPvPowerKw = parseDecimal(pvPower);
-  const estimatedVariableYearlyBill = yearlyBill > 0
-    ? Math.max(yearlyBill * 0.72, yearlyBill - ESTIMATED_FIXED_YEARLY_ENERGY_COST)
-    : 0;
-  const estimatedGridConsumptionKwh = estimatedVariableYearlyBill / ENERGY_PRICE_PER_KWH;
+  const estimatedGridConsumptionKwh = estimateGridConsumptionFromBill({
+    yearlyBill,
+    fixedYearlyCost: ESTIMATED_FIXED_YEARLY_ENERGY_COST,
+    tariff,
+  });
   const estimatedPvProductionKwh = hasPv === "yes" && currentPvPowerKw > 0 ? currentPvPowerKw * PV_PRODUCTION_PER_KWP : 0;
   const preliminaryYearlyConsumptionKwh = estimatedGridConsumptionKwh + estimatedPvProductionKwh * NET_BILLING_BASE_AUTOCONSUMPTION_RATE;
   const baseAutoconsumptionRate =
@@ -933,13 +952,26 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
 
       const storageFromConsumption = getStorageFromConsumption(yearlyConsumptionKwh);
       const suggestedPvStorageSystem = getSuggestedPvStorageSystem(yearlyConsumptionKwh);
+      const caresAboutSavings = priorities.includes("Niższe rachunki");
+      const caresAboutBackup = priorities.includes("Awaryjne zasilanie domu w razie awarii");
       const storageFromPv =
         hasPv === "yes" && currentPvPowerKw > 0
           ? pickStorageVariant(currentPvPowerKw * 2)
           : 0;
+      const storageFromTariff = caresAboutSavings
+        ? getTariffStorageFromConsumption(estimatedGridConsumptionKwh, tariff)
+        : 0;
+      const storageFromBackup = caresAboutBackup
+        ? getBackupStorageFromConsumption(yearlyConsumptionKwh)
+        : 0;
       const recommendedStorageKwh =
         hasPv === "yes"
-          ? Math.max(storageFromConsumption, storageFromPv)
+          ? Math.max(
+              storageFromConsumption,
+              storageFromPv,
+              storageFromTariff,
+              storageFromBackup
+            )
           : suggestedPvStorageSystem.storageKwh;
       let suggestedPvKw = hasPv === "yes" ? getSuggestedPvKw(yearlyConsumptionKwh) : suggestedPvStorageSystem.pvKw;
 
@@ -972,7 +1004,34 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const shouldRecommendPvExpansion = hasPv === "yes" && coveragePercent < 70;
       const pvExpansionStorageKwh = pickStorageVariant(suggestedPvKw * 2);
       const pvExpansionPriceRange = getPvStorageMarketingPriceRange(suggestedPvKw, pvExpansionStorageKwh);
-      const purchasePricePerKwh = getAvoidedEnergyPricePerKwh(tariff);
+      const tariffProfile = getTariffProfile(tariff);
+      const purchasePricePerKwh = tariffProfile.highZonePricePerKwh;
+      const tariffOptimizationBase = calculateTariffOptimization({
+        tariff,
+        storageKwh: recommendedStorageKwh,
+        yearlyConsumptionKwh: estimatedGridConsumptionKwh,
+      });
+      const alternativeTariffOptimizationBase = getBestAlternativeTariffOptimization({
+        currentTariff: tariff,
+        storageKwh: recommendedStorageKwh,
+        yearlyConsumptionKwh: estimatedGridConsumptionKwh,
+      });
+      const tariffLowAvailability = hasPv === "no"
+        ? 0.25
+        : settlementSystem === "net_metering"
+          ? 1
+          : 0.35;
+      const tariffHighAvailability = hasPv === "no"
+        ? 0.4
+        : settlementSystem === "net_metering"
+          ? 1
+          : 0.55;
+      const tariffSavingsLow = tariffOptimizationBase.yearlyBenefitLow * tariffLowAvailability;
+      const tariffSavingsHigh = tariffOptimizationBase.yearlyBenefitHigh * tariffHighAvailability;
+      const alternativeTariffSavingsLow =
+        alternativeTariffOptimizationBase.yearlyBenefitLow * tariffLowAvailability;
+      const alternativeTariffSavingsHigh =
+        alternativeTariffOptimizationBase.yearlyBenefitHigh * tariffHighAvailability;
 
       const netBillingSavingsDetails =
         hasPv === "yes" && settlementSystem !== "net_metering" && estimatedPvProductionKwh > 0
@@ -1012,7 +1071,8 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const pvStorageSelfConsumedKwh = newPvStorageFlow.autoconsumedWithStorageKwh;
       const pvStorageExportedKwh = newPvStorageFlow.exportedAfterStorageKwh;
       const pvStorageGridPurchaseKwh = Math.max(0, yearlyConsumptionKwh - pvStorageSelfConsumedKwh);
-      const pvStorageGridPurchaseCost = pvStorageGridPurchaseKwh * ENERGY_PRICE_PER_KWH;
+      const pvStorageGridPurchaseCost =
+        pvStorageGridPurchaseKwh * tariffProfile.averagePurchasePricePerKwh;
       const pvStorageExportValue = pvStorageExportedKwh * NET_BILLING_EXPORT_PRICE_PER_KWH;
       const pvStorageEstimatedBillAfterSystem = Math.max(
         ESTIMATED_FIXED_YEARLY_ENERGY_COST,
@@ -1024,20 +1084,60 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         Math.max(0, yearlyBill - ESTIMATED_FIXED_YEARLY_ENERGY_COST)
       );
 
-      const yearlySavingsLow = hasPv === "no"
+      const energySourceSavingsLow = hasPv === "no"
         ? clamp(pvStorageExpectedSavings * 0.9, 0, yearlyBill * 0.95)
         : netBillingSavingsDetails
           ? netBillingSavingsDetails.low
           : netMeteringSavingsDetails
             ? netMeteringSavingsDetails.low
             : 0;
-      const yearlySavingsHigh = hasPv === "no"
+      const energySourceSavingsHigh = hasPv === "no"
         ? clamp(pvStorageExpectedSavings * 1.1, 0, yearlyBill * 0.98)
         : netBillingSavingsDetails
           ? netBillingSavingsDetails.high
           : netMeteringSavingsDetails
             ? netMeteringSavingsDetails.high
             : 0;
+      const maximumVariableYearlyCost = Math.max(
+        0,
+        yearlyBill - ESTIMATED_FIXED_YEARLY_ENERGY_COST
+      );
+      const yearlySavingsLow = clamp(
+        energySourceSavingsLow + tariffSavingsLow,
+        0,
+        maximumVariableYearlyCost
+      );
+      const yearlySavingsHigh = clamp(
+        energySourceSavingsHigh + tariffSavingsHigh,
+        0,
+        maximumVariableYearlyCost
+      );
+      const alternativeYearlySavingsLow = clamp(
+        energySourceSavingsLow + alternativeTariffSavingsLow,
+        0,
+        maximumVariableYearlyCost
+      );
+      const alternativeYearlySavingsHigh = clamp(
+        energySourceSavingsHigh + alternativeTariffSavingsHigh,
+        0,
+        maximumVariableYearlyCost
+      );
+
+      const storageAlternatives = getStorageAlternatives(recommendedStorageKwh);
+      const lowerTariffOptimization = storageAlternatives.lower
+        ? calculateTariffOptimization({
+            tariff,
+            storageKwh: storageAlternatives.lower,
+            yearlyConsumptionKwh: estimatedGridConsumptionKwh,
+          })
+        : null;
+      const higherTariffOptimization = storageAlternatives.higher
+        ? calculateTariffOptimization({
+            tariff,
+            storageKwh: storageAlternatives.higher,
+            yearlyConsumptionKwh: estimatedGridConsumptionKwh,
+          })
+        : null;
 
       const baseCalculatorPriceWithoutSellerMarkup =
         hasPv === "yes"
@@ -1061,6 +1161,14 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const paybackYearsHigh = calculatePaybackYears(investmentHighAfterSubsidy, yearlySavingsLow);
       const paybackYearsWithoutSubsidyLow = calculatePaybackYears(priceLow, yearlySavingsHigh);
       const paybackYearsWithoutSubsidyHigh = calculatePaybackYears(priceHigh, yearlySavingsLow);
+      const alternativePaybackYearsLow = calculatePaybackYears(
+        investmentLowAfterSubsidy,
+        alternativeYearlySavingsHigh
+      );
+      const alternativePaybackYearsHigh = calculatePaybackYears(
+        investmentHighAfterSubsidy,
+        alternativeYearlySavingsLow
+      );
 
       const chartYearlyBillAfterInvestment = Math.max(0, yearlyBill - yearlySavingsLow);
       const chartCostReductionPercent =
@@ -1071,6 +1179,10 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
       const baseRecommendation = getRecommendation({
         paybackYearsLow,
         paybackYearsHigh,
+        alternativePaybackYearsLow,
+        alternativePaybackYearsHigh,
+        yearlyBill,
+        shouldRecommendPvExpansion,
         priorities,
       });
 
@@ -1080,11 +1192,15 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
             title:
               baseRecommendation.type === "recommended"
                 ? "Fotowoltaika z magazynem energii wygląda na dobrą inwestycję"
-                : "Fotowoltaika z magazynem energii ma ograniczoną opłacalność",
+                : baseRecommendation.type === "consider"
+                  ? "Wymagana indywidualna analiza fotowoltaiki i magazynu"
+                  : "Fotowoltaika z magazynem energii ma ograniczoną opłacalność",
             description:
               baseRecommendation.type === "recommended"
                 ? "Szacowany okres zwrotu jest korzystny, a połączenie fotowoltaiki z magazynem energii może znacząco ograniczyć zakup energii z sieci."
-                : "Przy obecnych założeniach taki zestaw może zwracać się stosunkowo długo. Warto porozmawiać z doradcą o doborze mocy PV, taryfie i możliwych dotacjach.",
+                : baseRecommendation.type === "consider"
+                  ? "Rachunki można prawdopodobnie ograniczyć, ale wynik zależy od właściwego podziału korzyści między fotowoltaikę, magazyn i pracę w strefach taryfowych."
+                  : "Przy obecnych założeniach taki zestaw może zwracać się stosunkowo długo. Warto porozmawiać z doradcą o doborze mocy PV, taryfie i możliwych dotacjach.",
           }
         : baseRecommendation;
 
@@ -1092,7 +1208,14 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         recommendedStorageKwh,
         storageFromConsumption,
         storageFromPv,
+        storageFromTariff,
+        storageFromBackup,
+        storageAlternatives,
+        lowerTariffOptimization,
+        higherTariffOptimization,
         currentPvPowerKw,
+        gridPurchaseYearlyKwh: estimatedGridConsumptionKwh,
+        gridPurchaseDailyKwh: estimatedGridConsumptionKwh / 365,
         suggestedPvKw,
         estimatedPvProductionKwh,
         coveragePercent,
@@ -1110,6 +1233,22 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         chartCostReductionPercent,
         netBillingSavingsDetails,
         netMeteringSavingsDetails,
+        energySourceSavingsLow,
+        energySourceSavingsHigh,
+        tariffOptimization: {
+          ...tariffOptimizationBase,
+          yearlyBenefitLow: tariffSavingsLow,
+          yearlyBenefitHigh: tariffSavingsHigh,
+          availabilityLow: tariffLowAvailability,
+          availabilityHigh: tariffHighAvailability,
+        },
+        alternativeTariffOptimization: {
+          ...alternativeTariffOptimizationBase,
+          yearlyBenefitLow: alternativeTariffSavingsLow,
+          yearlyBenefitHigh: alternativeTariffSavingsHigh,
+        },
+        alternativeYearlySavingsLow,
+        alternativeYearlySavingsHigh,
         yearlySavingsLow,
         yearlySavingsHigh,
         purchasePricePerKwh,
@@ -1123,9 +1262,11 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         paybackYearsHigh,
         paybackYearsWithoutSubsidyLow,
         paybackYearsWithoutSubsidyHigh,
+        alternativePaybackYearsLow,
+        alternativePaybackYearsHigh,
         recommendation,
       };
-    }, [hasPv, currentPvPowerKw, estimatedPvProductionKwh, settlementSystem, tariff, yearlyBill, yearlyConsumptionKwh, baseAutoconsumptionRate, priorities]);
+    }, [hasPv, currentPvPowerKw, estimatedGridConsumptionKwh, estimatedPvProductionKwh, settlementSystem, tariff, yearlyBill, yearlyConsumptionKwh, baseAutoconsumptionRate, priorities]);
 
   useEffect(() => {
     if (!showResult || !result || hasTrackedResultViewRef.current) {
@@ -1268,6 +1409,8 @@ const canSubmitLead = Boolean(
             recommendationType: result.recommendation.type,
             recommendationTitle: result.recommendation.title,
             recommendedStorageKwh: result.recommendedStorageKwh,
+            gridPurchaseYearlyKwh: result.gridPurchaseYearlyKwh,
+            gridPurchaseDailyKwh: result.gridPurchaseDailyKwh,
             suggestedPvKw: hasPv === "no" ? result.suggestedPvKw : null,
             coveragePercent: result.coveragePercent,
             shouldRecommendPvExpansion: result.shouldRecommendPvExpansion,
@@ -1276,6 +1419,17 @@ const canSubmitLead = Boolean(
             pvExpansionPriceHigh: result.pvExpansionPriceRange[1],
             yearlySavingsLow: result.yearlySavingsLow,
             yearlySavingsHigh: result.yearlySavingsHigh,
+            energySourceSavingsLow: result.energySourceSavingsLow,
+            energySourceSavingsHigh: result.energySourceSavingsHigh,
+            tariffOptimization: result.tariffOptimization,
+            alternativeTariffOptimization: result.alternativeTariffOptimization,
+            alternativeYearlySavingsLow: result.alternativeYearlySavingsLow,
+            alternativeYearlySavingsHigh: result.alternativeYearlySavingsHigh,
+            storageFromConsumption: result.storageFromConsumption,
+            storageFromPv: result.storageFromPv,
+            storageFromTariff: result.storageFromTariff,
+            storageFromBackup: result.storageFromBackup,
+            storageAlternatives: result.storageAlternatives,
             netBillingSavingsDetails: result.netBillingSavingsDetails,
             netMeteringSavingsDetails: result.netMeteringSavingsDetails,
             priceLow: result.priceLow,
@@ -1285,6 +1439,8 @@ const canSubmitLead = Boolean(
             paybackYearsHigh: result.paybackYearsHigh,
             paybackYearsWithoutSubsidyLow: result.paybackYearsWithoutSubsidyLow,
             paybackYearsWithoutSubsidyHigh: result.paybackYearsWithoutSubsidyHigh,
+            alternativePaybackYearsLow: result.alternativePaybackYearsLow,
+            alternativePaybackYearsHigh: result.alternativePaybackYearsHigh,
           },
           meta: {
             eventId: metaEventId,
@@ -1423,7 +1579,7 @@ const canSubmitLead = Boolean(
                 Czy magazyn energii ma sens w Twoim domu?
               </h1>
               <p className="mt-6 max-w-xl text-base leading-7 text-white/68 sm:text-lg">
-                Odpowiedz na kilka prostych pytań. Najpierw powiemy wprost, czy <strong className="text-white">rekomendujemy magazyn energii dla Twojego domu — TAK lub NIE</strong>. Po formularzu otrzymasz pełny raport i kontakt specjalisty.
+                Odpowiedz na kilka prostych pytań. Najpierw pokażemy jasną kwalifikację: <strong className="text-white">rekomendowany, wymaga indywidualnej analizy albo nieopłacalny</strong>. Po formularzu otrzymasz pełny raport i kontakt specjalisty.
               </p>
               <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
                 <a
@@ -1556,14 +1712,18 @@ const canSubmitLead = Boolean(
                   <p className={`text-sm font-semibold uppercase tracking-[0.18em] ${
                     result.recommendation.type === "recommended"
                       ? (isDarkMode ? "text-emerald-200" : "text-emerald-700")
-                      : (isDarkMode ? "text-rose-200" : "text-rose-700")
+                      : result.recommendation.type === "consider"
+                        ? (isDarkMode ? "text-amber-200" : "text-amber-700")
+                        : (isDarkMode ? "text-rose-200" : "text-rose-700")
                   }`}>
                     {getRecommendationBadge(result.recommendation.type)}
                   </p>
                   <h3 className="mt-3 text-2xl font-bold">
                     {result.recommendation.type === "recommended"
                       ? "TAK — rekomendujemy magazyn energii dla Twojego domu"
-                      : "NIE — przy podanych danych nie rekomendujemy magazynu energii"}
+                      : result.recommendation.type === "consider"
+                        ? "MOŻLIWE — wynik wymaga indywidualnej analizy"
+                        : "NIE — przy podanych danych nie rekomendujemy magazynu energii"}
                   </h3>
                   <p className={`mt-3 text-sm leading-6 ${mutedTextClass}`}>
                     {isFullReportUnlocked
@@ -1723,6 +1883,19 @@ const canSubmitLead = Boolean(
                       </>
                     )}
                   </div>
+                  {result.shouldRecommendPvExpansion && (
+                    <div className={`border p-5 ${isDarkMode ? "border-amber-300/25 bg-amber-300/10" : "border-amber-200 bg-amber-50"}`}>
+                      <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-amber-200" : "text-amber-800"}`}>
+                        Pierwszy rekomendowany krok
+                      </p>
+                      <p className={`mt-2 text-lg font-bold ${isDarkMode ? "text-white" : "text-slate-950"}`}>
+                        Sprawdź możliwość rozbudowy fotowoltaiki
+                      </p>
+                      <p className={`mt-2 text-sm leading-6 ${mutedTextClass}`}>
+                        Obecna instalacja pokrywa szacunkowo około {result.coveragePercent}% rocznego zapotrzebowania. Jeżeli dach i warunki przyłączenia pozwalają, dodatkowe panele zwykle dadzą większy efekt niż samo zwiększanie pojemności baterii. Gdy rozbudowa nie jest możliwa, poniższy magazyn pozostaje wariantem dobranym do taryfy i backupu.
+                      </p>
+                    </div>
+                  )}
                   {hasPv === "yes" && (
                     <div className={resultCardClass}>
                       <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Twoja obecna instalacja fotowoltaiczna</p>
@@ -1813,6 +1986,111 @@ const canSubmitLead = Boolean(
                   <div className={resultCardClass}>
                     <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Sugerowany magazyn energii</p>
                     <p className={isDarkMode ? "mt-1 text-2xl font-bold text-cyan-300" : "mt-1 text-2xl font-bold text-cyan-700"}>około {result.recommendedStorageKwh} kWh</p>
+                    <p className={`mt-2 text-sm leading-6 ${mutedTextClass}`}>
+                      Pojemność dobraliśmy łącznie do zużycia, mocy PV, wybranej taryfy i wskazanych priorytetów — nie tylko do jednego parametru.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                      <span className={isDarkMode ? "bg-white/8 px-3 py-1.5 text-white/75" : "bg-slate-100 px-3 py-1.5 text-slate-700"}>zużycie: {result.storageFromConsumption} kWh</span>
+                      {result.storageFromPv > 0 && <span className={isDarkMode ? "bg-white/8 px-3 py-1.5 text-white/75" : "bg-slate-100 px-3 py-1.5 text-slate-700"}>moc PV: {result.storageFromPv} kWh</span>}
+                      {result.storageFromTariff > 0 && <span className={isDarkMode ? "bg-white/8 px-3 py-1.5 text-white/75" : "bg-slate-100 px-3 py-1.5 text-slate-700"}>taryfa: {result.storageFromTariff} kWh</span>}
+                      {result.storageFromBackup > 0 && <span className={isDarkMode ? "bg-white/8 px-3 py-1.5 text-white/75" : "bg-slate-100 px-3 py-1.5 text-slate-700"}>backup: {result.storageFromBackup} kWh</span>}
+                    </div>
+                    {(result.storageAlternatives.lower || result.storageAlternatives.higher) && (
+                      <div className={`mt-4 grid gap-3 sm:grid-cols-2 ${mutedTextClass}`}>
+                        {result.storageAlternatives.lower && (
+                          <div className={isDarkMode ? "bg-white/5 p-3" : "bg-slate-100/80 p-3"}>
+                            <p className="text-xs font-bold">Mniejszy wariant: {result.storageAlternatives.lower} kWh</p>
+                            <p className="mt-1 text-xs leading-5">
+                              Niższy koszt, ale mniej energii na wieczór i backup
+                              {result.lowerTariffOptimization?.isTimeOfUse
+                                ? `; maksymalny potencjał taryfowy spada do około ${formatMoney(result.lowerTariffOptimization.yearlyBenefitHigh)} rocznie.`
+                                : "."}
+                            </p>
+                          </div>
+                        )}
+                        {result.storageAlternatives.higher && (
+                          <div className={isDarkMode ? "bg-white/5 p-3" : "bg-slate-100/80 p-3"}>
+                            <p className="text-xs font-bold">Większy wariant: {result.storageAlternatives.higher} kWh</p>
+                            <p className="mt-1 text-xs leading-5">
+                              Większa rezerwa i dłuższy backup
+                              {result.higherTariffOptimization?.isTimeOfUse
+                                ? `; maksymalny potencjał taryfowy to około ${formatMoney(result.higherTariffOptimization.yearlyBenefitHigh)} rocznie, więc przewaga finansowa może być niewielka.`
+                                : ", ale nie musi proporcjonalnie zwiększyć oszczędności."}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className={resultCardClass}>
+                    <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Wpływ taryfy na wynik</p>
+                    <p className={isDarkMode ? "mt-1 text-xl font-bold text-white" : "mt-1 text-xl font-bold text-slate-950"}>
+                      {result.tariffOptimization.label}
+                    </p>
+                    <p className={`mt-2 text-sm leading-6 ${mutedTextClass}`}>{result.tariffOptimization.strategy}</p>
+                    <div className={`mt-4 border p-4 ${isDarkMode ? "border-cyan-300/20 bg-cyan-300/8" : "border-cyan-200 bg-cyan-50"}`}>
+                      <p className={`text-[10px] font-bold uppercase tracking-wide ${mutedTextClass}`}>Energia dokupowana z sieci poza własną produkcją PV</p>
+                      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <p className="text-xl font-bold">{Math.round(result.gridPurchaseYearlyKwh).toLocaleString("pl-PL")} kWh/rok</p>
+                          <p className={`mt-1 text-xs ${mutedTextClass}`}>Szacunek na podstawie rachunku i wybranej taryfy.</p>
+                        </div>
+                        <div>
+                          <p className="text-xl font-bold">{result.gridPurchaseDailyKwh.toFixed(1).replace(".", ",")} kWh/dzień</p>
+                          <p className={`mt-1 text-xs ${mutedTextClass}`}>Średnia dobowa będąca podstawą analizy taryfowej.</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className={isDarkMode ? "bg-white/5 p-4" : "bg-slate-100/80 p-4"}>
+                        <p className={`text-[10px] font-bold uppercase tracking-wide ${mutedTextClass}`}>Przy obecnej taryfie</p>
+                        <p className="mt-1 text-sm font-bold">{result.tariffOptimization.label}</p>
+                        <p className="mt-2 text-lg font-bold text-emerald-600">
+                          {formatMoney(result.tariffOptimization.yearlyBenefitLow)} – {formatMoney(result.tariffOptimization.yearlyBenefitHigh)} / rok
+                        </p>
+                      </div>
+                      <div className={isDarkMode ? "bg-white/5 p-4" : "bg-slate-100/80 p-4"}>
+                        <p className={`text-[10px] font-bold uppercase tracking-wide ${mutedTextClass}`}>Po zmianie taryfy</p>
+                        <p className="mt-1 text-sm font-bold">{result.alternativeTariffOptimization.label}</p>
+                        <p className="mt-2 text-lg font-bold text-cyan-600">
+                          {formatMoney(result.alternativeTariffOptimization.yearlyBenefitLow)} – {formatMoney(result.alternativeTariffOptimization.yearlyBenefitHigh)} / rok
+                        </p>
+                      </div>
+                    </div>
+                    <p className={`mt-3 text-xs font-semibold leading-5 ${mutedTextClass}`}>
+                      {result.alternativeTariffOptimization.yearlyBenefitHigh > result.tariffOptimization.yearlyBenefitHigh
+                        ? `Zmiana taryfy może zwiększyć potencjał magazynu. Szacowany zwrot w tym wariancie to ${formatPaybackRange(result.alternativePaybackYearsLow, result.alternativePaybackYearsHigh)}.`
+                        : "Obecna taryfa ma co najmniej tak dobry potencjał jak porównywany wariant. Sama zmiana taryfy nie poprawia tego wyniku."}
+                    </p>
+                    {result.tariffOptimization.isTimeOfUse ? (
+                      <>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                          <div className={isDarkMode ? "bg-white/5 p-3" : "bg-slate-100/80 p-3"}>
+                            <p className={`text-[10px] font-bold uppercase ${mutedTextClass}`}>Korzyść dziennie</p>
+                            <p className="mt-1 font-bold">
+                              {formatMoneyWithDecimals(result.tariffOptimization.dailyBenefitMinimum)} – {formatMoneyWithDecimals(result.tariffOptimization.dailyBenefitMaximum)}
+                            </p>
+                          </div>
+                          <div className={isDarkMode ? "bg-white/5 p-3" : "bg-slate-100/80 p-3"}>
+                            <p className={`text-[10px] font-bold uppercase ${mutedTextClass}`}>Prognoza roczna</p>
+                            <p className="mt-1 font-bold">{formatMoney(result.tariffOptimization.yearlyBenefitLow)} – {formatMoney(result.tariffOptimization.yearlyBenefitHigh)}</p>
+                          </div>
+                          <div className={isDarkMode ? "bg-white/5 p-3" : "bg-slate-100/80 p-3"}>
+                            <p className={`text-[10px] font-bold uppercase ${mutedTextClass}`}>Energia przesuwana</p>
+                            <p className="mt-1 font-bold">
+                              {result.tariffOptimization.shiftedEnergyMinimumPerActiveDayKwh.toFixed(1).replace(".", ",")} – {result.tariffOptimization.shiftedEnergyPerActiveDayKwh.toFixed(1).replace(".", ",")} kWh/dzień
+                            </p>
+                          </div>
+                        </div>
+                        <p className={`mt-3 text-xs leading-5 ${mutedTextClass}`}>
+                          Model referencyjny obejmuje stawki G12 i wariantu weekendowego: około {result.tariffOptimization.lowZonePricePerKwh.toFixed(2).replace(".", ",")}–{result.tariffOptimization.lowZonePriceMaximumPerKwh.toFixed(2).replace(".", ",")} zł/kWh w taniej strefie, {result.tariffOptimization.highZonePriceMinimumPerKwh.toFixed(2).replace(".", ",")}–{result.tariffOptimization.highZonePricePerKwh.toFixed(2).replace(".", ",")} zł/kWh w drogiej oraz {result.tariffOptimization.activeDaysMinimumPerYear}–{result.tariffOptimization.activeDaysPerYear} dni pracy taryfowej rocznie. Dokładny wynik wymaga rachunku z podziałem zużycia na strefy i potwierdzenia stawek sprzedawcy oraz operatora.
+                        </p>
+                      </>
+                    ) : (
+                      <p className={`mt-3 text-xs font-semibold leading-5 ${mutedTextClass}`}>
+                        Do oszczędności nie doliczyliśmy pracy taryfowej. Dzięki temu nie pokazujemy korzyści, której nie da się potwierdzić na podstawie wybranej taryfy.
+                      </p>
+                    )}
                   </div>
                   <div className={resultCardClass}>
                     <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Szacowana roczna korzyść</p>
@@ -1828,7 +2106,28 @@ const canSubmitLead = Boolean(
                     </button>
 
                     {expandedResultDetails.yearlySavings && (
-                      result.netBillingSavingsDetails ? (
+                      <div className="mt-3 space-y-3">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className={isDarkMode ? "bg-white/5 px-4 py-3" : "bg-slate-100/80 px-4 py-3"}>
+                            <p className={`text-[10px] font-bold uppercase tracking-wide ${mutedTextClass}`}>
+                              Energia z PV / cały system
+                            </p>
+                            <p className="mt-1 text-sm font-bold">
+                              {formatMoney(result.energySourceSavingsLow)} – {formatMoney(result.energySourceSavingsHigh)} / rok
+                            </p>
+                          </div>
+                          <div className={isDarkMode ? "bg-white/5 px-4 py-3" : "bg-slate-100/80 px-4 py-3"}>
+                            <p className={`text-[10px] font-bold uppercase tracking-wide ${mutedTextClass}`}>
+                              Sterowanie według taryfy
+                            </p>
+                            <p className="mt-1 text-sm font-bold">
+                              {result.tariffOptimization.isTimeOfUse
+                                ? `${formatMoney(result.tariffOptimization.yearlyBenefitLow)} – ${formatMoney(result.tariffOptimization.yearlyBenefitHigh)} / rok`
+                                : "0 zł — brak potwierdzonej różnicy stref"}
+                            </p>
+                          </div>
+                        </div>
+                        {result.netBillingSavingsDetails ? (
                         <div className={`mt-3 px-4 py-3 ${isDarkMode ? "bg-white/5" : "bg-slate-100/80"}`}>
                           <p className={`text-xs leading-5 ${mutedTextClass}`}>
                             {settlementSystem === "unknown" ? "Ponieważ nie wskazano systemu rozliczeń, do symulacji przyjęliśmy zasady net-billingu. " : "Dla net-billingu "}przyjęliśmy około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.netBillingSavingsDetails.baseAutoconsumptionRate * 100)}%</strong> autokonsumpcji bez magazynu energii oraz około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.netBillingSavingsDetails.autoconsumptionRateWithStorage * 100)}%</strong> po zastosowaniu magazynu energii i HEMS. Korzyść wynika z tego, że zamiast sprzedawać energię po około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{NET_BILLING_EXPORT_PRICE_PER_KWH.toLocaleString("pl-PL", {
@@ -1840,7 +2139,7 @@ const canSubmitLead = Boolean(
                             })} zł/kWh</strong>, zużywasz większą część własnej energii na potrzeby domu.
                           </p>
                         </div>
-                      ) : (
+                        ) : (
                         <div className={`mt-3 px-4 py-3 ${isDarkMode ? "bg-white/5" : "bg-slate-100/80"}`}>
                           <p className={`text-xs leading-5 ${mutedTextClass}`}>
                             {result.netMeteringSavingsDetails
@@ -1850,7 +2149,8 @@ const canSubmitLead = Boolean(
         : `To około ${Math.round((result.yearlySavingsLow / yearlyBill) * 100)}–${Math.round((result.yearlySavingsHigh / yearlyBill) * 100)}% obecnych kosztów energii, w zależności od profilu zużycia i sposobu pracy instalacji.`}
                           </p>
                         </div>
-                      )
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className={resultCardClass}>
@@ -2212,7 +2512,7 @@ const canSubmitLead = Boolean(
                     <div className="mt-5 grid gap-3 sm:grid-cols-2">
                       {[
                         ["G11", "G11 — stała cena energii"],
-                        ["G12", "G12 — dwie strefy"],
+                        ["G12", "G12 — taryfa dwustrefowa"],
                         ["G13", "G13 — trzy strefy"],
                         ["other_unknown", "Inna / nie wiem"],
                       ].map(([value, label]) => (
@@ -2238,7 +2538,7 @@ const canSubmitLead = Boolean(
                         if (!tariff) return;
                         const tariffLabel = {
                           G11: "G11 — stała cena energii",
-                          G12: "G12 — dwie strefy",
+                          G12: "G12 — taryfa dwustrefowa",
                           G13: "G13 — trzy strefy",
                           other_unknown: "Inna / nie wiem",
                         }[tariff];
