@@ -15,6 +15,10 @@ import {
   pickStorageVariant,
   type Tariff,
 } from "@/lib/energyStorageTariff";
+import {
+  calculatePmeSubsidyRange,
+  getStorageBundlePrice,
+} from "@/lib/energyStoragePricing";
 import { normalizePolishMobilePhone } from "@/lib/polishMobilePhone";
 
 declare global {
@@ -131,26 +135,6 @@ const MAX_SHIFTABLE_EXPORT_SHARE = 0.7;
 const ESTIMATED_FIXED_YEARLY_ENERGY_COST = 420;
 const ANNUAL_ENERGY_PRICE_GROWTH = 0.09;
 const PV_PRODUCTION_PER_KWP = 1005;
-const EU_EQUIPMENT_SUBSIDY_BONUS = 2000;
-
-function calculateMaximumPmeSubsidy(params: {
-  billingSystem: SettlementSystem;
-  storageCapacityKwh: number;
-}) {
-  const programCap = params.billingSystem === "net_metering" ? 8000 : 16000;
-  const storageCapacityKwh = Math.max(0, params.storageCapacityKwh);
-  const storageCapByKwh = storageCapacityKwh * 800;
-  const maxStorageSubsidy = Math.min(storageCapByKwh, programCap);
-  const euBonus = EU_EQUIPMENT_SUBSIDY_BONUS;
-
-  return {
-    storageSubsidy: Math.round(maxStorageSubsidy),
-    euBonus: Math.round(euBonus),
-    total: Math.round(maxStorageSubsidy + euBonus),
-    maxStorageSubsidy: Math.round(maxStorageSubsidy),
-  };
-}
-
 function formatMoney(value: number) {
   return new Intl.NumberFormat("pl-PL", {
     style: "currency",
@@ -166,6 +150,12 @@ function formatMoneyWithDecimals(value: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatMoneyRange(low: number, high: number) {
+  return low === high
+    ? formatMoney(low)
+    : `${formatMoney(low)} – ${formatMoney(high)}`;
 }
 
 function formatPaybackRange(low: number, high: number) {
@@ -213,7 +203,7 @@ function createMetaLeadEventId() {
 
 function getStorageFromConsumption(yearlyConsumptionKwh: number) {
   if (yearlyConsumptionKwh <= 7000) return 10;
-  if (yearlyConsumptionKwh <= 11000) return 16;
+  if (yearlyConsumptionKwh <= 11000) return 15;
   if (yearlyConsumptionKwh <= 15000) return 20;
   return 30;
 }
@@ -261,41 +251,16 @@ function calculatePaybackYears(investmentAfterSubsidy: number, yearlySavings: nu
   return 30;
 }
 
-function getMarketingPriceRange(baseCalculatorPriceWithoutSellerMarkup: number) {
-  const priceLow = baseCalculatorPriceWithoutSellerMarkup + 3500;
-  const priceHigh = Math.round(priceLow * 1.25);
-
-  return [priceLow, priceHigh] as const;
-}
-
 function getPvStorageMarketingPriceRange(pvKw: number, storageKwh: number) {
   if (pvKw <= 4 && storageKwh <= 10) return [36000, 44000] as const;
   if (pvKw <= 5 && storageKwh <= 10) return [38000, 46500] as const;
-  if (pvKw <= 6 && storageKwh <= 16) return [42000, 51000] as const;
-  if (pvKw <= 8 && storageKwh <= 16) return [44400, 53600] as const;
+  if (pvKw <= 6 && storageKwh <= 15) return [42000, 51000] as const;
+  if (pvKw <= 8 && storageKwh <= 15) return [44400, 53600] as const;
   if (pvKw <= 10 && storageKwh <= 20) return [51900, 61600] as const;
   if (pvKw <= 12 && storageKwh <= 30) return [58900, 66800] as const;
   if (pvKw <= 15 && storageKwh <= 30) return [62600, 69900] as const;
 
   return [62600, 69900] as const;
-}
-
-
-function getOnlyStorageBasePriceWithoutSellerMarkup(storageKwh: number) {
-  if (storageKwh <= 10) return 19000;
-  if (storageKwh <= 16) return 25000;
-  if (storageKwh <= 20) return 27800;
-  return 43000;
-}
-
-function getPvStorageBasePriceWithoutSellerMarkup(pvKw: number, storageKwh: number) {
-  if (pvKw <= 4 && storageKwh <= 10) return 30000;
-  if (pvKw <= 5 && storageKwh <= 10) return 32000;
-  if (pvKw <= 6 && storageKwh <= 16) return 36000;
-  if (pvKw <= 8 && storageKwh <= 16) return 38400;
-  if (pvKw <= 10 && storageKwh <= 20) return 45900;
-  if (pvKw <= 12 && storageKwh <= 30) return 52900;
-  return 52900;
 }
 
 
@@ -1139,24 +1104,22 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
           })
         : null;
 
-      const baseCalculatorPriceWithoutSellerMarkup =
-        hasPv === "yes"
-          ? getOnlyStorageBasePriceWithoutSellerMarkup(recommendedStorageKwh)
-          : getPvStorageBasePriceWithoutSellerMarkup(suggestedPvKw, recommendedStorageKwh);
+      const storageBundlePrice = getStorageBundlePrice(recommendedStorageKwh);
+      const [priceLow, priceHigh] = hasPv === "yes"
+        ? [storageBundlePrice.priceLowGross, storageBundlePrice.priceHighGross]
+        : getPvStorageMarketingPriceRange(suggestedPvKw, recommendedStorageKwh);
 
-      const [priceLow, priceHigh] =
-        hasPv === "yes"
-          ? getMarketingPriceRange(baseCalculatorPriceWithoutSellerMarkup)
-          : getPvStorageMarketingPriceRange(suggestedPvKw, recommendedStorageKwh);
-
-      const subsidy = calculateMaximumPmeSubsidy({
+      const subsidy = calculatePmeSubsidyRange({
         billingSystem: settlementSystem,
-        storageCapacityKwh: recommendedStorageKwh,
+        storageKwh: recommendedStorageKwh,
       });
-      const subsidyEstimate = subsidy.total;
+      const subsidyEstimateLow = subsidy.low.total;
+      const subsidyEstimateHigh = subsidy.high.total;
+      // Pole zachowane dla starszych odbiorców payloadu; oznacza górną granicę.
+      const subsidyEstimate = subsidyEstimateHigh;
 
-      const investmentLowAfterSubsidy = Math.max(0, priceLow - subsidyEstimate);
-      const investmentHighAfterSubsidy = Math.max(0, priceHigh - subsidyEstimate);
+      const investmentLowAfterSubsidy = Math.max(0, priceLow - subsidyEstimateLow);
+      const investmentHighAfterSubsidy = Math.max(0, priceHigh - subsidyEstimateHigh);
       const paybackYearsLow = calculatePaybackYears(investmentLowAfterSubsidy, yearlySavingsHigh);
       const paybackYearsHigh = calculatePaybackYears(investmentHighAfterSubsidy, yearlySavingsLow);
       const paybackYearsWithoutSubsidyLow = calculatePaybackYears(priceLow, yearlySavingsHigh);
@@ -1255,9 +1218,17 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         priceLow,
         priceHigh,
         subsidyEstimate,
-        subsidyStorage: subsidy.storageSubsidy,
-        subsidyEuBonus: subsidy.euBonus,
+        subsidyEstimateLow,
+        subsidyEstimateHigh,
+        subsidyStorage: subsidy.high.storageSubsidy,
+        subsidyStorageLow: subsidy.low.storageSubsidy,
+        subsidyStorageHigh: subsidy.high.storageSubsidy,
+        subsidyEuBonus: subsidy.high.euBonus,
+        subsidyEuBonusLow: subsidy.low.euBonus,
+        subsidyEuBonusHigh: subsidy.high.euBonus,
         subsidyStorageLimit: subsidy.maxStorageSubsidy,
+        subsidyQualifyingCostGrossLow: subsidy.low.qualifyingCostGross,
+        subsidyQualifyingCostGrossHigh: subsidy.high.qualifyingCostGross,
         paybackYearsLow,
         paybackYearsHigh,
         paybackYearsWithoutSubsidyLow,
@@ -1447,8 +1418,14 @@ const canSubmitLead = Boolean(
             priceLow: result.priceLow,
             priceHigh: result.priceHigh,
             subsidyEstimate: result.subsidyEstimate,
+            subsidyEstimateLow: result.subsidyEstimateLow,
+            subsidyEstimateHigh: result.subsidyEstimateHigh,
             subsidyStorage: result.subsidyStorage,
+            subsidyStorageLow: result.subsidyStorageLow,
+            subsidyStorageHigh: result.subsidyStorageHigh,
             subsidyEuBonus: result.subsidyEuBonus,
+            subsidyEuBonusLow: result.subsidyEuBonusLow,
+            subsidyEuBonusHigh: result.subsidyEuBonusHigh,
             paybackYearsLow: result.paybackYearsLow,
             paybackYearsHigh: result.paybackYearsHigh,
             paybackYearsWithoutSubsidyLow: result.paybackYearsWithoutSubsidyLow,
@@ -2175,12 +2152,14 @@ const canSubmitLead = Boolean(
                   </div>
                   <div className={resultCardClass}>
                     <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-cyan-300/80" : "text-cyan-700"}`}>Potencjalna dotacja — nabór planowany</p>
-                    <p className={isDarkMode ? "mt-1 text-2xl font-bold text-violet-300" : "mt-1 text-2xl font-bold text-violet-700"}>do {formatMoney(result.subsidyEstimate)}</p>
+                    <p className={isDarkMode ? "mt-1 text-2xl font-bold text-violet-300" : "mt-1 text-2xl font-bold text-violet-700"}>
+                      {formatMoneyRange(result.subsidyEstimateLow, result.subsidyEstimateHigh)}
+                    </p>
                     <p className={`mt-1 text-xs font-semibold ${mutedTextClass}`}>
-                      {formatMoney(result.subsidyStorage)} dotacji do magazynu oraz {formatMoney(result.subsidyEuBonus)} bonusu za urządzenie / EMS z UE
+                      {formatMoneyRange(result.subsidyStorageLow, result.subsidyStorageHigh)} dotacji do magazynu oraz {formatMoney(result.subsidyEuBonus)} bonusu za urządzenie / EMS z UE
                     </p>
                     <p className={`mt-2 text-xs leading-5 ${mutedTextClass}`}>
-                      Pokazujemy maksymalną możliwą kwotę: do 800 zł za każdą kWh pojemności magazynu, maksymalnie {formatMoney(result.subsidyStorageLimit)} dla tej konfiguracji, oraz do 2 000 zł bonusu za urządzenie lub EMS produkowane w UE. Łączny limit programu wynosi do 18 000 zł. Ostateczna dotacja zależy między innymi od kosztów kwalifikowanych i wymaga potwierdzenia warunków planowanego naboru PME 2.
+                      Przedział liczymy od ceny brutto zestawu EcoBSS: do 30% kosztów kwalifikowanych, nie więcej niż 800 zł za każdą kWh pojemności magazynu i maksymalnie {formatMoney(result.subsidyStorageLimit)} dla tej konfiguracji, oraz do 2 000 zł bonusu za urządzenie lub EMS produkowane w UE. Maksymalny limit programu pozostaje na poziomie do 18 000 zł. Ostateczna kwota wymaga potwierdzenia warunków planowanego naboru PME 2.
                     </p>
                   </div>
                   <div className={resultCardClass}>

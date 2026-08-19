@@ -74,8 +74,9 @@ export function getTariffProfile(tariff: Tariff | null): TariffProfile {
 }
 
 export function pickStorageVariant(requiredKwh: number) {
-  if (requiredKwh <= 10) return 10;
-  if (requiredKwh <= 16) return 16;
+  // Wariant prezentowany jako 10 kWh ma rzeczywistą pojemność nominalną 10,24 kWh.
+  if (requiredKwh <= 10.24) return 10;
+  if (requiredKwh <= 15) return 15;
   if (requiredKwh <= 20) return 20;
   return 30;
 }
@@ -200,7 +201,7 @@ export function getBestAlternativeTariffOptimization(params: {
 }
 
 export function getStorageAlternatives(recommendedStorageKwh: number) {
-  const variants = [10, 16, 20, 30];
+  const variants = [10, 15, 20, 30];
   const index = variants.indexOf(recommendedStorageKwh);
 
   return {
