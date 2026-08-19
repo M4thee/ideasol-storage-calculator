@@ -45,3 +45,55 @@ summary {
   background: #c7f36b;
   color: #10261f;
 }
+
+@property --cta-orbit-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes cta-orbit {
+  to {
+    --cta-orbit-angle: 360deg;
+  }
+}
+
+.cta-orbit {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  width: 100%;
+  border-radius: 1.125rem;
+}
+
+.cta-orbit::before {
+  position: absolute;
+  z-index: -1;
+  inset: -5px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--cta-orbit-angle),
+    transparent 0deg 205deg,
+    rgba(255, 255, 255, 0.95) 232deg,
+    #c7f36b 258deg,
+    #ff9a18 292deg,
+    transparent 330deg 360deg
+  );
+  content: "";
+  filter: blur(7px);
+  opacity: 0.9;
+  animation: cta-orbit 3.6s linear infinite;
+  pointer-events: none;
+}
+
+@media (min-width: 640px) {
+  .cta-orbit {
+    width: fit-content;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cta-orbit::before {
+    animation: none;
+  }
+}
