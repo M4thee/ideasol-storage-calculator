@@ -69,19 +69,25 @@ summary {
 .cta-orbit::before {
   position: absolute;
   z-index: -1;
-  inset: -5px;
+  inset: -4px;
   border-radius: inherit;
   background: conic-gradient(
     from var(--cta-orbit-angle),
-    transparent 0deg 205deg,
-    rgba(255, 255, 255, 0.95) 232deg,
-    #c7f36b 258deg,
-    #ff9a18 292deg,
-    transparent 330deg 360deg
+    transparent 0deg 305deg,
+    rgba(255, 255, 255, 0.35) 316deg,
+    #ffffff 329deg,
+    #c7f36b 340deg,
+    transparent 354deg 360deg
   );
+  padding: 3px;
   content: "";
-  filter: blur(7px);
-  opacity: 0.9;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 4px rgba(199, 243, 107, 0.65));
+  opacity: 0.95;
   animation: cta-orbit 3.6s linear infinite;
   pointer-events: none;
 }
