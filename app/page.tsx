@@ -19,6 +19,7 @@ import {
   calculatePmeSubsidyRange,
   getStorageBundlePrice,
 } from "@/lib/energyStoragePricing";
+import { analyzeNetMeteringExpansion } from "@/lib/netMeteringExpansion";
 import { normalizePolishMobilePhone } from "@/lib/polishMobilePhone";
 
 declare global {
@@ -402,6 +403,7 @@ function getRecommendation(params: {
   alternativePaybackYearsHigh: number;
   yearlyBill: number;
   shouldRecommendPvExpansion: boolean;
+  requiresIndividualPvExpansionAnalysis: boolean;
   priorities: string[];
 }): {
   type: RecommendationType;
@@ -415,6 +417,7 @@ function getRecommendation(params: {
     alternativePaybackYearsHigh,
     yearlyBill,
     shouldRecommendPvExpansion,
+    requiresIndividualPvExpansionAnalysis,
     priorities,
   } = params;
   const paybackYearsForRecommendation = Math.round((paybackYearsLow + paybackYearsHigh) / 2);
@@ -424,12 +427,17 @@ function getRecommendation(params: {
   const caresAboutBackup = priorities.includes("Awaryjne zasilanie domu w razie awarii");
   const caresAboutEfficiency = priorities.includes("Zwiększenie produktywności mojej instalacji fotowoltaicznej (zapobieganie wyłączeniom)");
 
-  if (shouldRecommendPvExpansion && yearlyBill >= 3600) {
+  if (
+    (shouldRecommendPvExpansion || requiresIndividualPvExpansionAnalysis) &&
+    yearlyBill >= 3600
+  ) {
     return {
       type: "consider",
       title: "Wymagana indywidualna analiza",
       description:
-        "Magazyn może poprawić wynik, ale obecna fotowoltaika pokrywa zbyt małą część zapotrzebowania, aby sprowadzić decyzję do prostego doboru baterii. Najpierw trzeba sprawdzić możliwość rozbudowy PV, profil zużycia w strefach i wymagania dotyczące zasilania awaryjnego.",
+        requiresIndividualPvExpansionAnalysis
+          ? "Magazyn może poprawić wynik, ale ewentualna rozbudowa fotowoltaiki przekroczyłaby próg opustu 10 kWp. Trzeba osobno porównać oba warianty oraz potwierdzić profil zużycia w strefach i wymagania dotyczące zasilania awaryjnego."
+          : "Magazyn może poprawić wynik, ale obecna fotowoltaika pokrywa zbyt małą część zapotrzebowania, aby sprowadzić decyzję do prostego doboru baterii. Najpierw trzeba sprawdzić możliwość rozbudowy PV, profil zużycia w strefach i wymagania dotyczące zasilania awaryjnego.",
     };
   }
 
@@ -449,6 +457,7 @@ function getRecommendation(params: {
     paybackYearsForRecommendation <= 18 ||
     tariffChangeCouldHelp ||
     (shouldRecommendPvExpansion && yearlyBill >= 3600) ||
+    (requiresIndividualPvExpansionAnalysis && yearlyBill >= 3600) ||
     ((caresAboutBackup || caresAboutEfficiency) && yearlyBill >= 4800);
 
   if (needsComplexOptimization) {
@@ -938,39 +947,37 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
               storageFromBackup
             )
           : suggestedPvStorageSystem.storageKwh;
-      let suggestedPvKw = hasPv === "yes" ? getSuggestedPvKw(yearlyConsumptionKwh) : suggestedPvStorageSystem.pvKw;
-
-      if (
-        hasPv === "yes" &&
-        settlementSystem === "net_metering" &&
-        currentPvPowerKw > 0 &&
-        currentPvPowerKw < 10 &&
-        suggestedPvKw > 10
-      ) {
-        const productionAt10Kw = 10 * PV_PRODUCTION_PER_KWP;
-        const usableAt10Kw = productionAt10Kw * 0.8;
-
-        const productionAtSuggestedKw = suggestedPvKw * PV_PRODUCTION_PER_KWP;
-        const usableAtSuggestedKw = productionAtSuggestedKw * 0.7;
-
-        const gainAfterCrossingThreshold = usableAtSuggestedKw - usableAt10Kw;
-
-        if (gainAfterCrossingThreshold < 1500) {
-          suggestedPvKw = 10;
-        } else if (yearlyConsumptionKwh > 14000) {
-          suggestedPvKw = Math.max(suggestedPvKw, 12);
-        }
-      }
+      const tariffProfile = getTariffProfile(tariff);
+      const purchasePricePerKwh = tariffProfile.highZonePricePerKwh;
+      const suggestedPvKw = hasPv === "yes"
+        ? Math.max(currentPvPowerKw, getSuggestedPvKw(yearlyConsumptionKwh))
+        : suggestedPvStorageSystem.pvKw;
 
       const coveragePercent =
         hasPv === "yes" && yearlyConsumptionKwh > 0
           ? Math.round((estimatedPvProductionKwh / yearlyConsumptionKwh) * 100)
           : 100;
-      const shouldRecommendPvExpansion = hasPv === "yes" && coveragePercent < 70;
+      const hasPvExpansionPotential =
+        hasPv === "yes" &&
+        coveragePercent < 70 &&
+        suggestedPvKw > currentPvPowerKw;
+      const netMeteringExpansionAnalysis =
+        hasPvExpansionPotential && settlementSystem === "net_metering"
+          ? analyzeNetMeteringExpansion({
+              currentPvPowerKwp: currentPvPowerKw,
+              proposedPvPowerKwp: suggestedPvKw,
+              yearlyConsumptionKwh,
+              storageKwh: recommendedStorageKwh,
+              productionPerKwp: PV_PRODUCTION_PER_KWP,
+              purchasePricePerKwh,
+            })
+          : null;
+      const requiresIndividualPvExpansionAnalysis =
+        netMeteringExpansionAnalysis?.decision === "individual_analysis";
+      const shouldRecommendPvExpansion =
+        hasPvExpansionPotential && !requiresIndividualPvExpansionAnalysis;
       const pvExpansionStorageKwh = pickStorageVariant(suggestedPvKw * 2);
       const pvExpansionPriceRange = getPvStorageMarketingPriceRange(suggestedPvKw, pvExpansionStorageKwh);
-      const tariffProfile = getTariffProfile(tariff);
-      const purchasePricePerKwh = tariffProfile.highZonePricePerKwh;
       const tariffOptimizationBase = calculateTariffOptimization({
         tariff,
         storageKwh: recommendedStorageKwh,
@@ -1146,6 +1153,7 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         alternativePaybackYearsHigh,
         yearlyBill,
         shouldRecommendPvExpansion,
+        requiresIndividualPvExpansionAnalysis,
         priorities,
       });
 
@@ -1183,6 +1191,8 @@ const [isTurnstileLoaded, setIsTurnstileLoaded] = useState(false);
         estimatedPvProductionKwh,
         coveragePercent,
         shouldRecommendPvExpansion,
+        requiresIndividualPvExpansionAnalysis,
+        netMeteringExpansionAnalysis,
         pvExpansionStorageKwh,
         pvExpansionPriceRange,
         pvStorageProductionKwh,
@@ -1385,6 +1395,10 @@ const canSubmitLead = Boolean(
             suggestedPvKw: result.suggestedPvKw,
             coveragePercent: result.coveragePercent,
             shouldRecommendPvExpansion: result.shouldRecommendPvExpansion,
+            requiresIndividualPvExpansionAnalysis:
+              result.requiresIndividualPvExpansionAnalysis,
+            netMeteringExpansionAnalysis:
+              result.netMeteringExpansionAnalysis,
             pvExpansionStorageKwh: result.pvExpansionStorageKwh,
             pvExpansionPriceLow: result.pvExpansionPriceRange[0],
             pvExpansionPriceHigh: result.pvExpansionPriceRange[1],
@@ -1889,16 +1903,23 @@ const canSubmitLead = Boolean(
                       </>
                     )}
                   </div>
-                  {result.shouldRecommendPvExpansion && (
+                  {(result.shouldRecommendPvExpansion ||
+                    result.requiresIndividualPvExpansionAnalysis) && (
                     <div className={`border p-5 ${isDarkMode ? "border-amber-300/25 bg-amber-300/10" : "border-amber-200 bg-amber-50"}`}>
                       <p className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${isDarkMode ? "text-amber-200" : "text-amber-800"}`}>
-                        Pierwszy rekomendowany krok
+                        {result.requiresIndividualPvExpansionAnalysis
+                          ? "Ważne przy starym systemie rozliczeń"
+                          : "Pierwszy rekomendowany krok"}
                       </p>
                       <p className={`mt-2 text-lg font-bold ${isDarkMode ? "text-white" : "text-slate-950"}`}>
-                        Sprawdź możliwość rozbudowy fotowoltaiki
+                        {result.requiresIndividualPvExpansionAnalysis
+                          ? "Rozbudowa PV wymaga osobnego sprawdzenia"
+                          : "Sprawdź możliwość rozbudowy fotowoltaiki"}
                       </p>
                       <p className={`mt-2 text-sm leading-6 ${mutedTextClass}`}>
-                        Obecna instalacja pokrywa szacunkowo około {result.coveragePercent}% rocznego zapotrzebowania. Jeżeli dach i warunki przyłączenia pozwalają, dodatkowe panele zwykle dadzą większy efekt niż samo zwiększanie pojemności baterii. Gdy rozbudowa nie jest możliwa, poniższy magazyn pozostaje wariantem dobranym do taryfy i backupu.
+                        {result.requiresIndividualPvExpansionAnalysis
+                          ? "Przekroczenie 10 kWp zmienia opust z 80% na 70%, dlatego nie rekomendujemy rozbudowy automatycznie. Doradca porówna oba warianty, a poniższa rekomendacja magazynu pozostaje aktualna."
+                          : `Obecna instalacja pokrywa szacunkowo około ${result.coveragePercent}% rocznego zapotrzebowania. Jeżeli dach i warunki przyłączenia pozwalają, dodatkowe panele zwykle dadzą większy efekt niż samo zwiększanie pojemności baterii. Gdy rozbudowa nie jest możliwa, poniższy magazyn pozostaje wariantem dobranym do taryfy i backupu.`}
                       </p>
                     </div>
                   )}
