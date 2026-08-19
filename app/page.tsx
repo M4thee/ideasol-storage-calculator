@@ -1572,15 +1572,28 @@ const canSubmitLead = Boolean(
               <p className="mt-6 max-w-xl text-base leading-7 text-white/68 sm:text-lg">
                 Odpowiedz na kilka prostych pytań. Najpierw pokażemy jasną kwalifikację: <strong className="text-white">rekomendowany, wymaga indywidualnej analizy albo nieopłacalny</strong>. Po formularzu otrzymasz pełny raport i kontakt specjalisty.
               </p>
-              <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="mt-8 flex flex-col gap-4">
                 <a
                   href="#analiza"
                   onClick={(event) => { event.preventDefault(); startAnalysis(); }}
-                  className="inline-flex items-center justify-center rounded-full bg-[#c7f36b] px-6 py-4 text-sm font-black text-[#10261f] shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-[#b9ed54]"
+                  className="group inline-flex min-h-16 w-full items-center justify-between gap-5 rounded-2xl border-2 border-white bg-gradient-to-r from-[#ffd34d] via-[#ffb51b] to-[#ff9518] px-5 py-4 text-left text-[#10261f] shadow-[0_18px_48px_rgba(255,164,24,0.38)] ring-4 ring-[#ffb51b]/20 transition duration-200 hover:-translate-y-1 hover:shadow-[0_24px_58px_rgba(255,164,24,0.48)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/70 sm:w-fit sm:min-w-[390px] sm:px-6"
                 >
-                  Sprawdź rekomendację <span className="ml-2 text-lg">→</span>
+                  <span>
+                    <span className="block text-base font-black leading-tight sm:text-lg">
+                      Rozpocznij bezpłatną kalkulację
+                    </span>
+                    <span className="mt-1 block text-xs font-bold text-[#10261f]/70 sm:text-sm">
+                      Sprawdź, czy magazyn energii ma u Ciebie sens
+                    </span>
+                  </span>
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#10261f] text-xl font-black text-white transition group-hover:translate-x-1">
+                    →
+                  </span>
                 </a>
-                <span className="text-xs font-semibold text-white/48">Bez zobowiązań i bez kosztów</span>
+                <span className="inline-flex items-center gap-2 text-xs font-bold text-white/70">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/12 text-[11px] text-[#c7f36b]">✓</span>
+                  Wynik w około 60 sekund • bez zobowiązań i bez kosztów
+                </span>
               </div>
               <div className="mt-8 grid grid-cols-3 gap-3 border-t border-white/10 pt-6">
                 {[['01', 'Rachunek'], ['02', 'Instalacja'], ['03', 'Jasna rekomendacja']].map(([number, label]) => (
