@@ -125,7 +125,12 @@ function sendCalculatorAnalyticsEvent(
   }).catch(() => undefined);
 }
 
-const NET_BILLING_EXPORT_PRICE_PER_KWH = 0.34;
+// Średnia z 12 ostatnich opublikowanych RCEm (VIII 2025–VII 2026) oraz
+// obowiązujący mnożnik depozytu prosumenckiego 1,23.
+const NET_BILLING_RCEM_AVERAGE_PER_KWH = 0.30165;
+const NET_BILLING_DEPOSIT_MULTIPLIER = 1.23;
+const NET_BILLING_EXPORT_PRICE_PER_KWH =
+  NET_BILLING_RCEM_AVERAGE_PER_KWH * NET_BILLING_DEPOSIT_MULTIPLIER;
 const NET_BILLING_BASE_AUTOCONSUMPTION_RATE = 0.2;
 const NET_METERING_SMALL_INSTALLATION_RETURN_RATE = 0.8;
 const NET_METERING_LARGE_INSTALLATION_RETURN_RATE = 0.7;
@@ -2157,13 +2162,16 @@ const canSubmitLead = Boolean(
                         {result.netBillingSavingsDetails ? (
                         <div className={`mt-3 px-4 py-3 ${isDarkMode ? "bg-white/5" : "bg-slate-100/80"}`}>
                           <p className={`text-xs leading-5 ${mutedTextClass}`}>
-                            {settlementSystem === "unknown" ? "Ponieważ nie wskazano systemu rozliczeń, do symulacji przyjęliśmy zasady net-billingu. " : "Dla net-billingu "}przyjęliśmy około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.netBillingSavingsDetails.baseAutoconsumptionRate * 100)}%</strong> autokonsumpcji bez magazynu energii oraz około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.netBillingSavingsDetails.autoconsumptionRateWithStorage * 100)}%</strong> po zastosowaniu magazynu energii i HEMS. Korzyść wynika z tego, że zamiast sprzedawać energię po około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{NET_BILLING_EXPORT_PRICE_PER_KWH.toLocaleString("pl-PL", {
+                            {settlementSystem === "unknown" ? "Ponieważ nie wskazano systemu rozliczeń, do symulacji przyjęliśmy zasady net-billingu. " : "Dla net-billingu "}przyjęliśmy około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.netBillingSavingsDetails.baseAutoconsumptionRate * 100)}%</strong> autokonsumpcji bez magazynu energii oraz około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{Math.round(result.netBillingSavingsDetails.autoconsumptionRateWithStorage * 100)}%</strong> po zastosowaniu magazynu energii i HEMS. Przyjęta średnia RCEm z okresu VIII 2025–VII 2026 to około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{NET_BILLING_RCEM_AVERAGE_PER_KWH.toLocaleString("pl-PL", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })} zł/kWh</strong>, a następnie kupować ją po około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{result.purchasePricePerKwh.toLocaleString("pl-PL", {
+                            })} zł/kWh</strong>; po mnożniku depozytu 1,23 energia oddana ma w kalkulacji wartość około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{NET_BILLING_EXPORT_PRICE_PER_KWH.toLocaleString("pl-PL", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })} zł/kWh</strong>, zużywasz większą część własnej energii na potrzeby domu.
+                            })} zł/kWh</strong>. Magazyn pozwala uniknąć późniejszego zakupu tej energii po około <strong className={isDarkMode ? "text-white" : "text-slate-900"}>{result.purchasePricePerKwh.toLocaleString("pl-PL", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} zł/kWh</strong>. Dzięki temu większa część własnej energii zasila dom zamiast trafiać do sieci.
                           </p>
                         </div>
                         ) : (
